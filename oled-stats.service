@@ -1,0 +1,14 @@
+[Unit]
+Description=OLED system stats display (SH1107 128x128, I2C)
+After=multi-user.target
+
+[Service]
+Type=simple
+User=admin
+WorkingDirectory=/home/admin/oled-stats
+ExecStart=/home/admin/oled-stats/venv/bin/python /home/admin/oled-stats/stats_oled.py --interval 5 --rotate 3 --contrast 72 --night-contrast 16
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

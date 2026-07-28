@@ -1,0 +1,4 @@
+# Display library, installed from its own repository (no local copy kept here):
+rpi5-sh1107-oled-128x128 @ git+https://github.com/Jacksotnik/rpi5-sh1107-oled-128x128.git
+# Extra used only by stats_oled.py:
+psutil>=7.0.0
