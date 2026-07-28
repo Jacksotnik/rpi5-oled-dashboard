@@ -24,9 +24,10 @@ separate repository** — there is no copy of its code here.
 | `oled-stats.service` | the systemd unit; deployed to `/etc/systemd/system/` on the Pi (see below) |
 | `README.md` | this file |
 
-The deploy layout on the Pi is `~/oled-stats/` — it holds `stats_oled.py`, the
-`venv/` (where `oleddisplay` is installed) and `requirements.txt`. The systemd
-unit lives in `/etc/systemd/system/oled-stats.service`, not in that directory.
+The deploy layout on the Pi is `~/oled-stats/` — a **git clone of this repo**, plus a
+local `venv/` (where `oleddisplay` is installed; gitignored and not tracked). The
+systemd unit is installed to `/etc/systemd/system/oled-stats.service` from the repo's
+copy.
 
 ## Architecture
 
@@ -34,8 +35,8 @@ unit lives in `/etc/systemd/system/oled-stats.service`, not in that directory.
   (`pip install git+…`). The repository is its only source of code; there is no copy
   in this folder.
 - **Application `stats_oled.py`** — a thin consumer of the library (RPi5 metrics +
-  refresh loop). Its canonical source is **this repository**; the Pi runs a deployed
-  copy.
+  refresh loop). Its canonical source is **this repository**; the Pi runs a git clone
+  of it at `~/oled-stats`, updated with `git pull`.
 - **Service `oled-stats.service`** — starts the application at boot and restarts it
   on failure.
 
@@ -133,8 +134,8 @@ Edited in the library's working copy **on the Mac** (`~/my_projs/rpi5-sh1107-ole
 
 ### B. Changes to the `stats_oled.py` application
 
-Edit `stats_oled.py` **here on the Mac**, commit/push, then deploy the file to the Pi
-and restart the service:
+Edit `stats_oled.py` **here on the Mac**, commit/push, then update the Pi with
+`git pull` and restart the service:
 
 1. Edit and do a quick syntax check locally:
    ```bash
@@ -147,29 +148,37 @@ and restart the service:
    git add -A && git commit -m "…"
    git push
    ```
-3. Deploy the file to the Pi and restart:
+3. Update the Pi by pulling and restarting (`~/oled-stats` is a git clone of this repo):
    ```bash
-   scp stats_oled.py rpi:/home/admin/oled-stats/stats_oled.py
-   ssh rpi 'sudo systemctl restart oled-stats && sudo journalctl -u oled-stats -n 20 --no-pager'
+   ssh rpi
+   cd ~/oled-stats && git pull
+   sudo systemctl restart oled-stats
+   sudo journalctl -u oled-stats -n 20 --no-pager   # confirm no errors
    ```
 
 If the systemd unit itself changed (e.g. a different `--interval` or `--rotate`),
-deploy `oled-stats.service` too:
-
-```bash
-scp oled-stats.service rpi:/tmp/oled-stats.service
-ssh rpi 'sudo install -m 644 /tmp/oled-stats.service /etc/systemd/system/oled-stats.service \
-    && sudo systemctl daemon-reload \
-    && sudo systemctl restart oled-stats'
-```
-
-### Recreating the venv from scratch
+after the pull reinstall it and reload:
 
 ```bash
 cd ~/oled-stats
+sudo install -m 644 oled-stats.service /etc/systemd/system/oled-stats.service
+sudo systemctl daemon-reload && sudo systemctl restart oled-stats
+```
+
+### First install on a fresh Pi
+
+```bash
+git clone https://github.com/Jacksotnik/rpi5-oled-dashboard.git ~/oled-stats
+cd ~/oled-stats
 python3 -m venv --system-site-packages venv
 ./venv/bin/pip install -r requirements.txt
+sudo install -m 644 oled-stats.service /etc/systemd/system/oled-stats.service
+sudo systemctl daemon-reload && sudo systemctl enable --now oled-stats
 ```
+
+Cloning a public repo is anonymous — no need to switch the gh account (that is only for
+pushing). To rebuild just the venv later, re-run the `python3 -m venv …` and
+`pip install` lines.
 
 ## Important cautions
 
