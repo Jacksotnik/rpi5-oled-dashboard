@@ -1,54 +1,57 @@
 # rpi5-oled-dashboard
 
-System-stats service for a 1.5" OLED **128×128** panel (SH1107 driver, I²C) on a
-Raspberry Pi 5. The screen shows a header (hostname + uptime) and six rows — CPU
-(load / temperature), RAM (used / total), SSD (free / total + NVMe temperature),
-SSID (with a WiFi signal-strength icon to the right of the network name), IP, and
-Fan (rpm).
+System-stats display for a 1.5" **128×128** SH1107 OLED (I²C) on a Raspberry Pi 5. Shows a
+header (hostname + uptime) and six rows: CPU (load / temp), RAM (used / total), SSD
+(free / total + NVMe temp), Wi-Fi SSID (with a signal-bars icon), IP, and fan rpm. At night
+(00:00–06:00 by default) the panel dims to slow OLED burn-in.
 
-> Roadmap: the panel currently shows system metrics only; hardware sensors and
-> their readouts are planned next.
+> Roadmap: system metrics today; hardware sensors and their readouts next.
 
-The panel is driven by the **`oleddisplay` library, which is installed from a
-separate repository** — there is no copy of its code here.
+The panel is driven by the **`oleddisplay`** library, installed into the venv from its own
+repository — no copy is kept here:
+<https://github.com/Jacksotnik/rpi5-sh1107-oled-128x128>
 
-- Library repository: https://github.com/Jacksotnik/rpi5-sh1107-oled-128x128
-- Local working copy (on the Mac): `~/my_projs/rpi5-sh1107-oled-128x128`
-
-## Repository contents
+## Contents
 
 | Path | Purpose |
 |------|---------|
-| `stats_oled.py` | the application: metric collection + screen layout + refresh loop; imports the installed `oleddisplay`. This is the canonical source of the app — edited here on the Mac and deployed to the Pi |
-| `requirements.txt` | venv dependencies: the library from git + `psutil` |
-| `oled-stats.service` | the systemd unit; deployed to `/etc/systemd/system/` on the Pi (see below) |
-| `README.md` | this file |
+| `stats_oled.py` | the app — metric collection, screen layout, refresh loop |
+| `requirements.txt` | venv deps: the `oleddisplay` library (from git) + `psutil` |
+| `oled-stats.service` | systemd unit, installed to `/etc/systemd/system/` on the Pi |
+| `install.sh` | one-command first install on the Pi |
+| `update.sh` | one-command update / deploy on the Pi |
 
-The deploy layout on the Pi is `~/oled-stats/` — a **git clone of this repo**, plus a
-local `venv/` (where `oleddisplay` is installed; gitignored and not tracked). The
-systemd unit is installed to `/etc/systemd/system/oled-stats.service` from the repo's
-copy.
+## Install (on the Pi)
 
-## Architecture
+```bash
+git clone https://github.com/Jacksotnik/rpi5-oled-dashboard.git ~/oled-stats
+~/oled-stats/install.sh
+```
 
-- **Library `oleddisplay`** — installed into the `venv` from the GitHub repository
-  (`pip install git+…`). The repository is its only source of code; there is no copy
-  in this folder.
-- **Application `stats_oled.py`** — a thin consumer of the library (RPi5 metrics +
-  refresh loop). Its canonical source is **this repository**; the Pi runs a git clone
-  of it at `~/oled-stats`, updated with `git pull`.
-- **Service `oled-stats.service`** — starts the application at boot and restarts it
-  on failure.
+`install.sh` creates the venv, installs the dependencies, installs and enables the systemd
+unit, and starts the service. Cloning a public repo is anonymous — no auth needed.
 
-## Autostart at boot (systemd)
+## Update / deploy
 
-The unit `/etc/systemd/system/oled-stats.service` (tracked here as `oled-stats.service`):
+Push the change, then on the Pi run:
+
+```bash
+ssh rpi '~/oled-stats/update.sh'      # or ./update.sh while sshed in
+```
+
+`update.sh` does the whole deploy: `git pull`, sync venv deps, reinstall the `oleddisplay`
+library only when its upstream commit moved (`--lib` forces it), reinstall the systemd unit
+if it changed, restart the service, and tail the log.
+
+> Changing the `oleddisplay` library? Push it in its own repo, then run `update.sh` on the
+> Pi — it compares the installed commit with the repo HEAD and force-reinstalls when they
+> differ (the version stays `0.1.0`, so plain pip would skip the new code).
+
+## The service
+
+`oled-stats.service` runs the app at boot and restarts it on failure:
 
 ```ini
-[Unit]
-Description=OLED system stats display (SH1107 128x128, I2C)
-After=multi-user.target
-
 [Service]
 Type=simple
 User=admin
@@ -56,138 +59,29 @@ WorkingDirectory=/home/admin/oled-stats
 ExecStart=/home/admin/oled-stats/venv/bin/python /home/admin/oled-stats/stats_oled.py --interval 5 --rotate 3 --contrast 72 --night-contrast 16
 Restart=on-failure
 RestartSec=3
-
-[Install]
-WantedBy=multi-user.target
 ```
 
-Line by line:
+- Runs as `admin` (in the `i2c` group → reaches `/dev/i2c-1` without root), from the venv
+  where `oleddisplay` is installed.
+- `--interval 5` = refresh seconds; `--rotate 3` = 270°. `--contrast 72` is the daytime
+  brightness (0..255; the SH1107 default is 127, so dim below that). `--night-contrast 16`
+  dims the panel during the night window **00:00–06:00** (set with `--night-start` /
+  `--night-end`, Pi local time); it needs `--contrast` as the daytime value to restore to.
+- The screen **blanks on stop/shutdown**: the app catches SIGTERM and clears the panel, so
+  the last frame doesn't stay burned on until power-off.
 
-- `After=multi-user.target` — starts after multi-user initialization (base services
-  are already up).
-- `Type=simple` — the process does not fork; systemd considers it started as soon as
-  `ExecStart` runs.
-- `User=admin` — runs as user `admin`, who is in the `i2c` group and therefore reaches
-  `/dev/i2c-1` without root.
-- `WorkingDirectory=/home/admin/oled-stats` — the process working directory.
-- `ExecStart=…/venv/bin/python …/stats_oled.py --interval 5 --rotate 3 --contrast 72 --night-contrast 16`
-  — launches the app with the interpreter **from the venv** (that is where `oleddisplay`
-  is installed): refresh every 5 seconds, rotation `3` (270°), daytime contrast
-  (brightness) `72` out of 0..255. The SH1107 default in luma is `127`, so for a
-  noticeable dimming `--contrast` must be set well below 127. `--night-contrast 16`
-  lowers brightness to `16` at night, **00:00–06:00** (the window is configurable via
-  `--night-start` / `--night-end`, in the Pi's local time), to save power and slow OLED
-  burn-in; it requires `--contrast` to be set (the value to restore to during the day).
-- The screen **blanks on a normal stop/shutdown**: the app catches SIGTERM (sent by
-  systemd on `stop`/`poweroff`) and clears the panel cleanly. Otherwise the last frame
-  would stay "frozen" until power is removed from the module.
-- `Restart=on-failure` + `RestartSec=3` — on a crash, restart after 3 seconds.
-- `WantedBy=multi-user.target` — on `enable` a symlink is created in
-  `multi-user.target.wants/`, so the service comes up on every boot.
-
-The service is currently **enabled** (autostart on). Management:
+Manage it:
 
 ```bash
-sudo systemctl status oled-stats     # state
-sudo systemctl restart oled-stats    # restart
-sudo systemctl stop oled-stats       # stop
-sudo systemctl start oled-stats      # start
-sudo systemctl disable oled-stats    # disable autostart
-sudo journalctl -u oled-stats -f     # follow logs live
+sudo systemctl status oled-stats
+sudo systemctl restart oled-stats
+sudo journalctl -u oled-stats -f
 ```
 
-## Build and deploy after changes
+## Cautions
 
-The library lives in its own repository; the application lives here. The steps depend
-on what changed.
-
-### A. Changes to the `oleddisplay` library
-
-Edited in the library's working copy **on the Mac** (`~/my_projs/rpi5-sh1107-oled-128x128`).
-
-1. Make the personal gh account active (required to push to the personal repo):
-   ```bash
-   gh auth switch --hostname github.com --user Jacksotnik
-   ```
-2. Edit the code and run the tests locally:
-   ```bash
-   cd ~/my_projs/rpi5-sh1107-oled-128x128
-   ./.venv/bin/python -m unittest discover -s tests
-   ```
-3. Commit and push:
-   ```bash
-   git add -A && git commit -m "…"
-   git push
-   ```
-4. **On the Pi**, reinstall the library from the fresh HEAD and restart the service:
-   ```bash
-   ssh rpi
-   ~/oled-stats/venv/bin/pip install --upgrade --force-reinstall --no-deps --no-cache-dir \
-       "git+https://github.com/Jacksotnik/rpi5-sh1107-oled-128x128.git"
-   sudo systemctl restart oled-stats
-   sudo journalctl -u oled-stats -n 20 --no-pager   # confirm no errors
-   ```
-
-> ⚠️ The package version usually does not change (`0.1.0`), so a plain
-> `pip install -r requirements.txt` **will not** pull the new code — pip decides it is
-> already installed. Updating requires the `--force-reinstall --no-cache-dir` flags.
-
-### B. Changes to the `stats_oled.py` application
-
-Edit `stats_oled.py` **here on the Mac**, commit/push, then update the Pi with
-`git pull` and restart the service:
-
-1. Edit and do a quick syntax check locally:
-   ```bash
-   cd ~/my_projs/rpi5-oled-dashboard
-   python3 -m py_compile stats_oled.py
-   ```
-2. Commit and push (personal account — see cautions):
-   ```bash
-   gh auth switch --hostname github.com --user Jacksotnik
-   git add -A && git commit -m "…"
-   git push
-   ```
-3. Update the Pi by pulling and restarting (`~/oled-stats` is a git clone of this repo):
-   ```bash
-   ssh rpi
-   cd ~/oled-stats && git pull
-   sudo systemctl restart oled-stats
-   sudo journalctl -u oled-stats -n 20 --no-pager   # confirm no errors
-   ```
-
-If the systemd unit itself changed (e.g. a different `--interval` or `--rotate`),
-after the pull reinstall it and reload:
-
-```bash
-cd ~/oled-stats
-sudo install -m 644 oled-stats.service /etc/systemd/system/oled-stats.service
-sudo systemctl daemon-reload && sudo systemctl restart oled-stats
-```
-
-### First install on a fresh Pi
-
-```bash
-git clone https://github.com/Jacksotnik/rpi5-oled-dashboard.git ~/oled-stats
-cd ~/oled-stats
-python3 -m venv --system-site-packages venv
-./venv/bin/pip install -r requirements.txt
-sudo install -m 644 oled-stats.service /etc/systemd/system/oled-stats.service
-sudo systemctl daemon-reload && sudo systemctl enable --now oled-stats
-```
-
-Cloning a public repo is anonymous — no need to switch the gh account (that is only for
-pushing). To rebuild just the venv later, re-run the `python3 -m venv …` and
-`pip install` lines.
-
-## Important cautions
-
-- **Do not access the display from a second process** while the service is running: on
-  exit `luma` sends the panel a display-off (`0xAE`), the screen goes dark, and the
-  service does not turn it back on. For manual experiments, first
-  `sudo systemctl stop oled-stats`.
-- **Pushing to the personal repository** goes under the active gh account — this repo
-  needs `Jacksotnik` (`gh auth switch --hostname github.com --user Jacksotnik`). Reading
-  (`git fetch` / `clone`) works on a public repo without switching.
-- The hardware quirk (spurious NAKs on the least-significant bit) and its software
-  workaround are described in the library repository's own README.
+- **Don't open the display from a second process** while the service runs: on exit `luma`
+  sends display-off (`0xAE`) and the panel goes dark until the service is restarted — stop
+  the service first (`sudo systemctl stop oled-stats`).
+- The hardware quirk (spurious NAKs on the least-significant bit) and its workaround are
+  documented in the library repo's README.
