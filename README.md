@@ -10,8 +10,8 @@ when a fan is present — its rpm (the row is hidden on fanless boards). At nigh
 Every 15 seconds the screen alternates with a **weather page** — the current temperature
 (°C), the day's high/low, a day/night condition icon, the time, date and place, and a
 "last updated" footer. Weather comes from [Open-Meteo](https://open-meteo.com) (free, no
-API key) for a location resolved automatically by IP, refreshed every 30 minutes on a
-background thread.
+API key), refreshed every 30 minutes on a background thread — for a fixed location set on
+the service command line, or (by default) one resolved automatically by IP.
 
 > Roadmap: system metrics today; hardware sensors and their readouts next.
 
@@ -65,7 +65,7 @@ if it changed, restart the service, and tail the log.
 Type=simple
 User=admin
 WorkingDirectory=/home/admin/oled-stats
-ExecStart=/home/admin/oled-stats/venv/bin/python /home/admin/oled-stats/stats_oled.py --interval 5 --rotate 3 --contrast 72 --night-contrast 16
+ExecStart=/home/admin/oled-stats/venv/bin/python /home/admin/oled-stats/stats_oled.py --interval 5 --rotate 3 --contrast 72 --night-contrast 16 --latitude 45.32673 --longitude 14.44241 --city Rijeka
 Restart=on-failure
 RestartSec=3
 ```
@@ -78,7 +78,8 @@ RestartSec=3
   `--night-end`, Pi local time); it needs `--contrast` as the daytime value to restore to.
 - Weather page: on by default. `--no-weather` disables it, `--page-seconds` sets the
   switch cadence (default 15), `--weather-refresh` the fetch period (default 1800 s). A
-  fixed `--latitude`/`--longitude` (with optional `--city`) skips IP geolocation.
+  fixed `--latitude`/`--longitude` (with optional `--city`) skips IP geolocation — this
+  unit pins **Rijeka** (45.327, 14.442).
 - The screen **blanks on stop/shutdown**: the app catches SIGTERM and clears the panel, so
   the last frame doesn't stay burned on until power-off.
 

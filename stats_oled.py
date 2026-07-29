@@ -18,7 +18,7 @@ that eases panel wear. The loop also alternates the dashboard with a weather pag
 temperature, high/low and conditions from :mod:`weather`) on a timer.
 """
 
-__version__ = "1.2.0"
+__version__ = "1.2.1"
 
 import argparse
 import math
