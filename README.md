@@ -1,9 +1,10 @@
 # rpi5-oled-dashboard
 
 System-stats display for a 1.5" **128×128** SH1107 OLED (I²C) on a Raspberry Pi 5. Shows a
-header (hostname + uptime) and six rows: CPU (load / temp), RAM (used / total), SSD
-(free / total + NVMe temp), the network uplink (Wi-Fi SSID with a signal-bars icon, or
-`LAN` on a wired link), IP, and fan rpm. At night
+header (hostname + uptime) and up to six rows: CPU (load / temp), RAM (used / total), the
+root disk (free / total + temp, labelled `SSD` or `SD` after the actual medium), the
+network uplink (Wi-Fi SSID with a signal-bars icon, or `LAN` on a wired link), IP, and —
+when a fan is present — its rpm (the row is hidden on fanless boards). At night
 (00:00–06:00 by default) the panel dims to slow OLED burn-in.
 
 > Roadmap: system metrics today; hardware sensors and their readouts next.

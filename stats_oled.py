@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Service that shows Raspberry Pi 5 system stats on an OLED.
 
-Draws a status screen: a header with the device name (left) and uptime (right), then
-six rows — CPU (load / temperature), RAM (used / total), SSD (free / total /
-temperature), the network uplink (Wi-Fi SSID with a signal-bars icon, or ``LAN`` on a
-wired link), IP address and fan (current rpm).
+Draws a status screen: a header with the device name (left) and uptime (right), then up
+to six rows — CPU (load / temperature), RAM (used / total), the root disk (free / total /
+temperature, labelled ``SSD`` or ``SD`` after the actual medium), the network uplink
+(Wi-Fi SSID with a signal-bars icon, or ``LAN`` on a wired link), IP address and, when a
+fan is present, its speed (current rpm — the row is hidden on fanless boards).
 Each data row justifies a
 regular-font label to the left edge and a bold-font value (same size) to the right edge;
 the screen is assembled one line at a time through :class:`ScreenWriter` (rather than the
@@ -16,7 +17,7 @@ is metric collection, the row layout, the refresh loop, and a night-time dimming
 that eases panel wear.
 """
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 import argparse
 import signal
@@ -43,7 +44,7 @@ MISSING = "--"
 WHITE = "white"
 
 # --- Layout (in pixels) ------------------------------------------------------
-# The header shows the device name (left) and uptime (right); the six data rows below
+# The header shows the device name (left) and uptime (right); the data rows below
 # justify a regular label to the left edge and a bold value to the right edge.
 # Temperatures are shown as "47°" (degree sign only) to stay compact.
 TITLE_SIZE = 12    # header font (device name + uptime)
@@ -52,7 +53,7 @@ MARGIN = 3         # left/right screen margin
 LABEL_GAP = 4      # minimum gap between a label and its right-aligned value
 TITLE_TOP = 3      # y of the header row
 ROWS_TOP = 24      # y of the first data row (small gap below the header)
-ROW_STEP = 17      # vertical step between data rows (six rows fill the panel)
+ROW_STEP = 17      # vertical step between data rows (up to six rows fill the panel)
 
 # --- Wi-Fi signal icon (ascending bars) --------------------------------------
 # A tiny signal meter drawn at the right end of the NET row when it shows Wi-Fi: WIFI_BARS
@@ -65,8 +66,10 @@ WIFI_BAR_MIN_H = 3     # height of the shortest (leftmost) bar
 WIFI_BAR_STEP = 2      # each bar is this many px taller than the one before it
 WIFI_ICON_GAP = 3      # gap between the icon and the SSID name to its left
 
-Metrics = namedtuple("Metrics",
-                     "hostname ip net_kind ssid wifi_signal cpu ram ssd fan uptime")
+Metrics = namedtuple(
+    "Metrics",
+    "hostname ip net_kind ssid wifi_signal cpu ram disk_label ssd fan uptime",
+)
 Sensors = namedtuple("Sensors", "cpu_temp ssd_temp fan")
 NetStatus = namedtuple("NetStatus", "kind ssid signal")   # kind: "wifi" | "wired" | None
 
@@ -128,7 +131,7 @@ class ScreenWriter:
 
 
 def draw_dashboard(display, draw, metrics):
-    """Draw the header (name left, uptime right) and the six data rows onto ``draw``."""
+    """Draw the header (name left, uptime right) and the data rows onto ``draw``."""
     writer = ScreenWriter(display, draw, margin=MARGIN, top=TITLE_TOP)
     # Header: the hostname on the left, the uptime on the right, both in the title font.
     header_font = display.font(TITLE_SIZE, bold=True)
@@ -144,7 +147,8 @@ def draw_dashboard(display, draw, metrics):
 
     data_row("CPU:", metrics.cpu)
     data_row("RAM:", metrics.ram)
-    data_row("SSD:", metrics.ssd)
+    # Root disk: the label is "SSD" or "SD" depending on the medium backing "/".
+    data_row(f"{metrics.disk_label}:", metrics.ssd)
     # NET row: Wi-Fi shows "<SSID> <signal-bars>", a wired uplink shows "LAN", and no
     # uplink shows the "--" placeholder.
     if metrics.net_kind == "wifi":
@@ -155,7 +159,9 @@ def draw_dashboard(display, draw, metrics):
     else:
         data_row("NET:", MISSING)
     data_row("IP:", metrics.ip)
-    data_row("Fan:", metrics.fan)
+    # Fan row only on boards that actually have a fan (else metrics.fan is None).
+    if metrics.fan is not None:
+        data_row("Fan:", metrics.fan)
 
 
 def show_dashboard(display, metrics):
@@ -253,6 +259,23 @@ def read_fan_rpm(fan_path):
     except OSError:
         return None
     return int(raw) if raw.isdigit() else None
+
+
+def read_disk_label():
+    """Return the root storage row's label: ``"SD"`` for an SD/eMMC card, else ``"SSD"``.
+
+    Names the row after the medium backing ``/``: an SD card sits on an ``mmcblk*`` block
+    device, whereas an NVMe or SATA/USB SSD does not.
+    """
+    device = ""
+    for partition in psutil.disk_partitions():
+        if partition.mountpoint == "/":
+            device = partition.device
+            break
+    name = device.rsplit("/", 1)[-1]
+    if name.startswith("mmcblk"):
+        return "SD"
+    return "SSD"
 
 
 def read_primary_ip():
@@ -366,7 +389,8 @@ def format_temp(celsius):
 def format_fan(rpm):
     """Fan speed with its unit, e.g. ``"2400 rpm"`` — always shown, even ``"0 rpm"``.
 
-    Only a missing sensor (``None``) collapses to ``"--"``.
+    An unreadable reading (``None``) collapses to ``"--"``. A board with no fan at all is
+    handled upstream: :func:`collect_metrics` leaves ``fan`` empty so the row is hidden.
     """
     if rpm is None:
         return MISSING
@@ -394,6 +418,12 @@ def collect_metrics(hostname, sensors):
     ssd_total = format_bytes(disk.total)
     ssd_temp = format_temp(read_temp_c(sensors.ssd_temp))
     net = read_network()
+    # No fan sensor → no Fan row at all (fan stays None); a present sensor always shows the
+    # row, even at "0 rpm".
+    if sensors.fan is None:
+        fan = None
+    else:
+        fan = format_fan(read_fan_rpm(sensors.fan))
     return Metrics(
         hostname=hostname,
         ip=or_missing(read_primary_ip()),
@@ -402,8 +432,9 @@ def collect_metrics(hostname, sensors):
         wifi_signal=net.signal,
         cpu=f"{cpu_load} / {cpu_temp}",
         ram=format_ram(vm.total - vm.available, vm.total),
+        disk_label=read_disk_label(),
         ssd=f"{ssd_free}/{ssd_total} {ssd_temp}",
-        fan=format_fan(read_fan_rpm(sensors.fan)),
+        fan=fan,
         uptime=format_duration(read_uptime_seconds()),
     )
 
