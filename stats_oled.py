@@ -6,19 +6,19 @@ to six rows — CPU (load / temperature), RAM (used / total), the root disk (fre
 temperature, labelled ``SSD`` or ``SD`` after the actual medium), the network uplink
 (Wi-Fi SSID with a signal-bars icon, or ``LAN`` on a wired link), IP address and, when a
 fan is present, its speed (current rpm — the row is hidden on fanless boards).
-Each data row justifies a
-regular-font label to the left edge and a bold-font value (same size) to the right edge;
-the screen is assembled one line at a time through :class:`ScreenWriter` (rather than the
-library's ready-made ``show_status``), which keeps per-line font control in the caller's
-hands.
+Each data row justifies a regular-font label to the left edge and a bold-font value (same
+size) to the right edge; the screen is composed from the :mod:`oleddisplay.layout`
+primitives — an :class:`~oleddisplay.layout.Rows` writer for the header and plain rows, and
+:meth:`~oleddisplay.layout.Rows.custom` for the Wi-Fi row's SSID-plus-icon.
 
 All low-level screen handling lives in the :mod:`oleddisplay` package; what remains here
 is metric collection, the row layout, the refresh loop, and a night-time dimming window
 that eases panel wear. The loop also alternates the dashboard with a weather page (current
-temperature, high/low and conditions from :mod:`weather`) on a timer.
+temperature, high/low and conditions from :mod:`weather`), picking the due page with
+:func:`oleddisplay.due_page_index`.
 """
 
-__version__ = "1.2.1"
+__version__ = "1.3.0"
 
 import argparse
 import math
@@ -36,9 +36,12 @@ from oleddisplay import (
     DEFAULT_BUS,
     DEFAULT_ROTATE,
     OledDisplay,
+    due_page_index,
     format_bytes,
     format_duration,
     format_percent,
+    format_temperature,
+    layout,
 )
 
 import weather
@@ -81,73 +84,26 @@ NetStatus = namedtuple("NetStatus", "kind ssid signal")   # kind: "wifi" | "wire
 
 # --- Screen drawing ----------------------------------------------------------
 
-class ScreenWriter:
-    """Draw a status screen one line at a time, top to bottom.
-
-    Wraps the PIL ``ImageDraw`` handed out by :meth:`OledDisplay.render` and keeps a
-    y-cursor, so a caller writes the screen as a flat sequence of :meth:`row` calls
-    instead of computing pixel coordinates. Every call chooses its own font(s), so the
-    header, labels and values can each look different.
-    """
-
-    def __init__(self, display, draw, *, margin, top):
-        self._display = display
-        self._draw = draw
-        self._margin = margin
-        self._y = top
-
-    def row(self, label, value, *, label_font, value_font, advance):
-        """Draw a left-aligned ``label`` and a right-aligned ``value`` on one row.
-
-        Both are pinned by their ink: the label's leftmost lit pixel lands on the left
-        margin and the value's rightmost lit pixel on the right margin, so the two visible
-        margins are equal (drawing at the raw pen instead leaves the glyph's left side
-        bearing as extra space on the left only). If the value would collide with the label
-        it is truncated with an ellipsis.
-
-        :param label_font: font for the label (regular).
-        :param value_font: font for the value (bold, same size as the label).
-        :param advance: pixels to move the cursor down after the row.
-        """
-        right_edge = self._display.width - self._margin
-        label_right = _draw_ink_left(self._draw, self._margin, self._y, label, label_font)
-        cell_width = right_edge - (label_right + LABEL_GAP)
-        fitted = _fit_width(value, value_font, cell_width)
-        _draw_ink_right(self._draw, right_edge, self._y, fitted, value_font)
-        self._y += advance
-
-    def wifi_row(self, label, name, signal, *, label_font, value_font, advance):
-        """Draw the Wi-Fi NET row: ``label`` left, the network ``name`` right-aligned, and
-        a Wi-Fi signal-bars icon pinned to the far right.
-
-        :param name: the network name (already ``"--"`` when disconnected).
-        :param signal: signal strength 0..100, or ``None`` (icon drawn empty).
-        """
-        right_edge = self._display.width - self._margin
-        icon_left = _draw_wifi_bars(self._draw, right=right_edge,
-                                    baseline=self._y + BODY_SIZE, signal=signal)
-        name_right = icon_left - WIFI_ICON_GAP
-        label_right = _draw_ink_left(self._draw, self._margin, self._y, label, label_font)
-        cell_width = name_right - (label_right + LABEL_GAP)
-        fitted = _fit_width(name, value_font, cell_width)
-        _draw_ink_right(self._draw, name_right, self._y, fitted, value_font)
-        self._y += advance
-
-
 def draw_dashboard(display, draw, metrics):
-    """Draw the header (name left, uptime right) and the data rows onto ``draw``."""
-    writer = ScreenWriter(display, draw, margin=MARGIN, top=TITLE_TOP)
-    # Header: the hostname on the left, the uptime on the right, both in the title font.
-    header_font = display.font(TITLE_SIZE, bold=True)
-    writer.row(metrics.hostname, metrics.uptime, label_font=header_font,
-               value_font=header_font, advance=ROWS_TOP - TITLE_TOP)
+    """Draw the header (name left, uptime right) and the data rows onto ``draw``.
 
+    Composed from the library's layout primitives: an :class:`oleddisplay.layout.Rows`
+    writer lays out the header and the plain label/value rows, and the Wi-Fi NET row uses
+    :meth:`Rows.custom` to fit the SSID beside a signal-bars icon.
+    """
+    title_font = display.font(TITLE_SIZE, bold=True)
     label_font = display.font(BODY_SIZE)
     value_font = display.font(BODY_SIZE, bold=True)
 
+    rows = layout.Rows(draw, width=display.width, margin=MARGIN, top=TITLE_TOP,
+                       label_gap=LABEL_GAP)
+    # Header: the hostname on the left, the uptime on the right, both in the title font.
+    rows.row(metrics.hostname, metrics.uptime, label_font=title_font,
+             value_font=title_font, advance=ROWS_TOP - TITLE_TOP)
+
     def data_row(label, value):
-        writer.row(label, value, label_font=label_font, value_font=value_font,
-                   advance=ROW_STEP)
+        rows.row(label, value, label_font=label_font, value_font=value_font,
+                 advance=ROW_STEP)
 
     data_row("CPU:", metrics.cpu)
     data_row("RAM:", metrics.ram)
@@ -156,8 +112,10 @@ def draw_dashboard(display, draw, metrics):
     # NET row: Wi-Fi shows "<SSID> <signal-bars>", a wired uplink shows "LAN", and no
     # uplink shows the "--" placeholder.
     if metrics.net_kind == "wifi":
-        writer.wifi_row("NET:", metrics.ssid, metrics.wifi_signal,
-                        label_font=label_font, value_font=value_font, advance=ROW_STEP)
+        rows.custom(
+            lambda d, y, right_edge: _draw_net_wifi(d, y, right_edge, metrics,
+                                                    label_font, value_font),
+            advance=ROW_STEP)
     elif metrics.net_kind == "wired":
         data_row("NET:", "LAN")
     else:
@@ -168,41 +126,28 @@ def draw_dashboard(display, draw, metrics):
         data_row("Fan:", metrics.fan)
 
 
+def _draw_net_wifi(draw, y, right_edge, metrics, label_font, value_font):
+    """Paint the Wi-Fi NET row: "NET:" left, the SSID right-aligned, signal bars far right.
+
+    Used as a :meth:`oleddisplay.layout.Rows.custom` painter, so it lines up with the plain
+    rows around it while adding the icon the generic row layout can't.
+    """
+    icon_left = _draw_wifi_bars(draw, right=right_edge, baseline=y + BODY_SIZE,
+                                signal=metrics.wifi_signal)
+    name_right = icon_left - WIFI_ICON_GAP
+    _, label_right = layout.draw_text(draw, MARGIN, y, "NET:", label_font,
+                                      align="left", flush=True)
+    cell_width = name_right - (label_right + LABEL_GAP)
+    fitted = layout.fit_text(value_font, metrics.ssid, cell_width)
+    layout.draw_text(draw, name_right, y, fitted, value_font, align="right", flush=True)
+
+
 def show_dashboard(display, metrics):
     """Render one full frame of the status screen to the panel."""
     def paint(draw):
         draw_dashboard(display, draw, metrics)
 
     display.render(paint)
-
-
-def _draw_ink_left(draw, x, y, text, font):
-    """Draw ``text`` so its leftmost lit pixel lands on ``x``; return the ink's right x.
-
-    ``draw.text`` places the pen at the glyph origin, which sits a hair left of the first
-    glyph's ink by its side bearing; shifting left by that bearing makes the visible left
-    edge land exactly on ``x``, matching a right edge placed the same way.
-    """
-    ink_left, _, ink_right, _ = font.getbbox(text)
-    draw.text((int(x - ink_left), y), text, font=font, fill=WHITE)
-    return x - ink_left + ink_right
-
-
-def _draw_ink_right(draw, right_x, y, text, font):
-    """Draw ``text`` so its rightmost lit pixel lands on ``right_x``."""
-    ink_left, _, ink_right, _ = font.getbbox(text)
-    draw.text((int(right_x - ink_right), y), text, font=font, fill=WHITE)
-
-
-def _fit_width(text, font, max_width):
-    """Return ``text`` truncated with an ellipsis so it fits within ``max_width`` px."""
-    if font.getlength(text) <= max_width:
-        return text
-    ellipsis = "…"
-    truncated = text
-    while truncated and font.getlength(truncated + ellipsis) > max_width:
-        truncated = truncated[:-1]
-    return truncated + ellipsis
 
 
 def signal_to_bars(signal):
@@ -310,7 +255,7 @@ def draw_weather(display, draw, data, now):
 
     _draw_pin(draw, MARGIN, WX_CITY_Y + 1, WX_GLYPH)
     city_x = MARGIN + glyph_gap
-    city = _fit_width(data.city, row_font, right - city_x)
+    city = layout.fit_text(row_font, data.city, right - city_x)
     draw.text((city_x, WX_CITY_Y), city, font=row_font, fill=WHITE)
 
     # Footer: when the reading was last refreshed.
@@ -661,13 +606,6 @@ def or_missing(value):
     return value if value else MISSING
 
 
-def format_temp(celsius):
-    """A temperature in °C → a compact ``"47°"`` (degree sign only). ``None`` → ``"--"``."""
-    if celsius is None:
-        return MISSING
-    return f"{celsius:.0f}°"
-
-
 def format_fan(rpm):
     """Fan speed with its unit, e.g. ``"2400 rpm"`` — always shown, even ``"0 rpm"``.
 
@@ -695,10 +633,10 @@ def collect_metrics(hostname, sensors):
     vm = psutil.virtual_memory()
     disk = psutil.disk_usage("/")
     cpu_load = format_percent(psutil.cpu_percent(interval=None))
-    cpu_temp = format_temp(read_temp_c(sensors.cpu_temp))
+    cpu_temp = format_temperature(read_temp_c(sensors.cpu_temp), unit=False)
     ssd_free = format_bytes(disk.free)
     ssd_total = format_bytes(disk.total)
-    ssd_temp = format_temp(read_temp_c(sensors.ssd_temp))
+    ssd_temp = format_temperature(read_temp_c(sensors.ssd_temp), unit=False)
     net = read_network()
     # No fan sensor → no Fan row at all (fan stays None); a present sensor always shows the
     # row, even at "0 rpm".
@@ -793,8 +731,8 @@ def _show_current_page(display, args, hostname, sensors, weather_service):
     """
     on_weather = False
     if weather_service is not None:
-        slot = int(time.monotonic() // args.page_seconds)
-        on_weather = (slot % 2) == 1
+        page = due_page_index(time.monotonic(), seconds=args.page_seconds, count=2)
+        on_weather = page == 1
 
     if on_weather:
         show_weather(display, weather_service.latest())
