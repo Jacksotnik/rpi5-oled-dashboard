@@ -3,7 +3,8 @@
 
 Draws a status screen: a header with the device name (left) and uptime (right), then
 six rows — CPU (load / temperature), RAM (used / total), SSD (free / total /
-temperature), Wi-Fi SSID (with a signal-bars icon), IP address and fan (current rpm).
+temperature), the network uplink (Wi-Fi SSID with a signal-bars icon, or ``LAN`` on a
+wired link), IP address and fan (current rpm).
 Each data row justifies a
 regular-font label to the left edge and a bold-font value (same size) to the right edge;
 the screen is assembled one line at a time through :class:`ScreenWriter` (rather than the
@@ -14,6 +15,8 @@ All low-level screen handling lives in the :mod:`oleddisplay` package; what rema
 is metric collection, the row layout, the refresh loop, and a night-time dimming window
 that eases panel wear.
 """
+
+__version__ = "1.0.0"
 
 import argparse
 import signal
@@ -52,8 +55,9 @@ ROWS_TOP = 24      # y of the first data row (small gap below the header)
 ROW_STEP = 17      # vertical step between data rows (six rows fill the panel)
 
 # --- Wi-Fi signal icon (ascending bars) --------------------------------------
-# A tiny signal meter drawn at the right end of the SSID row: WIFI_BARS bars of growing
-# height; the ones covered by the current signal are solid, the rest hollow outlines.
+# A tiny signal meter drawn at the right end of the NET row when it shows Wi-Fi: WIFI_BARS
+# bars of growing height; the ones covered by the current signal are solid, the rest
+# hollow outlines.
 WIFI_BARS = 4          # number of bars
 WIFI_BAR_WIDTH = 3     # px width of each bar (>=3 so a hollow bar shows an interior gap)
 WIFI_BAR_GAP = 1       # px gap between bars
@@ -61,8 +65,10 @@ WIFI_BAR_MIN_H = 3     # height of the shortest (leftmost) bar
 WIFI_BAR_STEP = 2      # each bar is this many px taller than the one before it
 WIFI_ICON_GAP = 3      # gap between the icon and the SSID name to its left
 
-Metrics = namedtuple("Metrics", "hostname ip ssid wifi_signal cpu ram ssd fan uptime")
+Metrics = namedtuple("Metrics",
+                     "hostname ip net_kind ssid wifi_signal cpu ram ssd fan uptime")
 Sensors = namedtuple("Sensors", "cpu_temp ssd_temp fan")
+NetStatus = namedtuple("NetStatus", "kind ssid signal")   # kind: "wifi" | "wired" | None
 
 
 # --- Screen drawing ----------------------------------------------------------
@@ -102,8 +108,8 @@ class ScreenWriter:
         self._y += advance
 
     def wifi_row(self, label, name, signal, *, label_font, value_font, advance):
-        """Draw the SSID row: ``label`` left, the network ``name`` right-aligned, and a
-        Wi-Fi signal-bars icon pinned to the far right.
+        """Draw the Wi-Fi NET row: ``label`` left, the network ``name`` right-aligned, and
+        a Wi-Fi signal-bars icon pinned to the far right.
 
         :param name: the network name (already ``"--"`` when disconnected).
         :param signal: signal strength 0..100, or ``None`` (icon drawn empty).
@@ -139,8 +145,15 @@ def draw_dashboard(display, draw, metrics):
     data_row("CPU:", metrics.cpu)
     data_row("RAM:", metrics.ram)
     data_row("SSD:", metrics.ssd)
-    writer.wifi_row("SSID:", metrics.ssid, metrics.wifi_signal,
-                    label_font=label_font, value_font=value_font, advance=ROW_STEP)
+    # NET row: Wi-Fi shows "<SSID> <signal-bars>", a wired uplink shows "LAN", and no
+    # uplink shows the "--" placeholder.
+    if metrics.net_kind == "wifi":
+        writer.wifi_row("NET:", metrics.ssid, metrics.wifi_signal,
+                        label_font=label_font, value_font=value_font, advance=ROW_STEP)
+    elif metrics.net_kind == "wired":
+        data_row("NET:", "LAN")
+    else:
+        data_row("NET:", MISSING)
     data_row("IP:", metrics.ip)
     data_row("Fan:", metrics.fan)
 
@@ -288,6 +301,51 @@ def read_wifi():
     return None, None
 
 
+def read_default_iface():
+    """Return the interface carrying the default route, or ``None`` (network down).
+
+    Asks the kernel which interface it would use to reach a public address; the
+    ``dev <iface>`` field of ``ip route get`` is the current uplink — ``wlan0`` on Wi-Fi,
+    ``eth0`` on a cable.
+    """
+    try:
+        completed = subprocess.run(
+            ["ip", "route", "get", "8.8.8.8"],
+            capture_output=True, text=True, timeout=3, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    fields = completed.stdout.split()
+    if "dev" not in fields:
+        return None
+    dev_index = fields.index("dev")
+    if dev_index + 1 >= len(fields):
+        return None
+    return fields[dev_index + 1]
+
+
+def is_wireless(iface):
+    """Whether ``iface`` is a Wi-Fi interface, per its sysfs markers."""
+    base = Path("/sys/class/net") / iface
+    return (base / "wireless").exists() or (base / "phy80211").exists()
+
+
+def read_network():
+    """Classify the active uplink as a :class:`NetStatus`.
+
+    Looks at the interface carrying the default route: a wireless one is reported as
+    ``"wifi"`` (with its SSID and signal), a wired one as ``"wired"``, and no route as a
+    disconnected state (``kind`` is ``None``).
+    """
+    iface = read_default_iface()
+    if iface is None:
+        return NetStatus(kind=None, ssid=None, signal=None)
+    if is_wireless(iface):
+        ssid, signal = read_wifi()
+        return NetStatus(kind="wifi", ssid=ssid, signal=signal)
+    return NetStatus(kind="wired", ssid=None, signal=None)
+
+
 def read_uptime_seconds():
     """Return the seconds elapsed since boot."""
     return time.time() - psutil.boot_time()
@@ -335,12 +393,13 @@ def collect_metrics(hostname, sensors):
     ssd_free = format_bytes(disk.free)
     ssd_total = format_bytes(disk.total)
     ssd_temp = format_temp(read_temp_c(sensors.ssd_temp))
-    ssid, wifi_signal = read_wifi()
+    net = read_network()
     return Metrics(
         hostname=hostname,
         ip=or_missing(read_primary_ip()),
-        ssid=or_missing(ssid),
-        wifi_signal=wifi_signal,
+        net_kind=net.kind,
+        ssid=or_missing(net.ssid),
+        wifi_signal=net.signal,
         cpu=f"{cpu_load} / {cpu_temp}",
         ram=format_ram(vm.total - vm.available, vm.total),
         ssd=f"{ssd_free}/{ssd_total} {ssd_temp}",
