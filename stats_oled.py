@@ -14,12 +14,14 @@ hands.
 
 All low-level screen handling lives in the :mod:`oleddisplay` package; what remains here
 is metric collection, the row layout, the refresh loop, and a night-time dimming window
-that eases panel wear.
+that eases panel wear. The loop also alternates the dashboard with a weather page (current
+temperature, high/low and conditions from :mod:`weather`) on a timer.
 """
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 import argparse
+import math
 import signal
 import socket
 import subprocess
@@ -39,9 +41,12 @@ from oleddisplay import (
     format_percent,
 )
 
+import weather
+
 HWMON_ROOT = Path("/sys/class/hwmon")
 MISSING = "--"
 WHITE = "white"
+BLACK = "black"
 
 # --- Layout (in pixels) ------------------------------------------------------
 # The header shows the device name (left) and uptime (right); the data rows below
@@ -214,6 +219,266 @@ def _draw_wifi_bars(draw, *, right, baseline, signal):
         else:
             draw.rectangle((x0, top, x1, baseline), outline=WHITE)
     return left
+
+
+# --- Weather page ------------------------------------------------------------
+# A second screen the loop alternates with the dashboard: the big current temperature and
+# the day's high/low on the left, a condition icon (day/night aware) top-right, then the
+# time, date and place, and a footer with the last-refresh time. All icons are drawn from
+# primitives (like the Wi-Fi bars) in an outline style that keeps lit pixels — and burn-in
+# — low.
+WX_TEMP_SIZE = 33    # big current-temperature number
+WX_UNIT_SIZE = 15    # the "C" unit beside the big number
+WX_HILO_SIZE = 13    # the day's high / low
+WX_ROW_SIZE = 13     # the time / date / city rows
+WX_FOOT_SIZE = 10    # the "Updated …" footer
+WX_TEMP_TOP = 4      # y of the big temperature
+WX_HILO_Y = 41       # y of the high / low line
+WX_TIME_Y = 60       # y of the time row
+WX_DATE_Y = 78       # y of the date row
+WX_CITY_Y = 96       # y of the city row
+WX_FOOT_Y = 115      # y of the footer
+WX_ICON_BOX = (82, 6, 124, 46)   # (x0, y0, x1, y1) box for the condition icon
+WX_GLYPH = 10        # size of the small clock / pin glyphs on the rows
+
+
+def _round_temp(value):
+    """A temperature rounded to a whole number for display; ``None`` → ``"--"``."""
+    if value is None:
+        return MISSING
+    return f"{value:.0f}"
+
+
+def draw_weather(display, draw, data, now):
+    """Draw the weather page: big current temp, day high/low, a condition icon and place.
+
+    ``data`` is the latest :class:`weather.WeatherData` (``None`` before the first fetch);
+    ``now`` is a ``time.struct_time`` used for the clock and date rows.
+    """
+    if data is None:
+        _draw_weather_loading(display, draw)
+        return
+
+    right = display.width - MARGIN
+
+    # Big current temperature, e.g. "12°" with a smaller "C" tucked to its right.
+    temp_font = display.font(WX_TEMP_SIZE, bold=True)
+    unit_font = display.font(WX_UNIT_SIZE, bold=True)
+    temp_text = f"{_round_temp(data.temp)}°"
+    draw.text((MARGIN, WX_TEMP_TOP), temp_text, font=temp_font, fill=WHITE)
+    unit_x = MARGIN + temp_font.getlength(temp_text) + 1
+    draw.text((unit_x, WX_TEMP_TOP + WX_TEMP_SIZE - WX_UNIT_SIZE - 3),
+              "C", font=unit_font, fill=WHITE)
+
+    # The day's high / low.
+    hilo_font = display.font(WX_HILO_SIZE)
+    draw.text((MARGIN, WX_HILO_Y),
+              f"{_round_temp(data.high)}° / {_round_temp(data.low)}°",
+              font=hilo_font, fill=WHITE)
+
+    # Condition icon, top-right, day/night aware.
+    _draw_weather_icon(draw, WX_ICON_BOX, data.category, data.is_day)
+
+    # Time (24-hour), date and city.
+    row_font = display.font(WX_ROW_SIZE, bold=True)
+    date_font = display.font(WX_ROW_SIZE)
+    glyph_gap = WX_GLYPH + 5
+
+    _draw_clock(draw, MARGIN, WX_TIME_Y + 1, WX_GLYPH)
+    draw.text((MARGIN + glyph_gap, WX_TIME_Y), time.strftime("%H:%M", now),
+              font=row_font, fill=WHITE)
+
+    draw.text((MARGIN, WX_DATE_Y), time.strftime("%a, %d %b", now),
+              font=date_font, fill=WHITE)
+
+    _draw_pin(draw, MARGIN, WX_CITY_Y + 1, WX_GLYPH)
+    city_x = MARGIN + glyph_gap
+    city = _fit_width(data.city, row_font, right - city_x)
+    draw.text((city_x, WX_CITY_Y), city, font=row_font, fill=WHITE)
+
+    # Footer: when the reading was last refreshed.
+    foot_font = display.font(WX_FOOT_SIZE)
+    updated = time.strftime("%d %b %H:%M", time.localtime(data.updated))
+    draw.text((MARGIN, WX_FOOT_Y), f"Updated {updated}", font=foot_font, fill=WHITE)
+
+
+def show_weather(display, data):
+    """Render one full frame of the weather page to the panel."""
+    now = time.localtime()
+
+    def paint(draw):
+        draw_weather(display, draw, data, now)
+
+    display.render(paint)
+
+
+def _draw_weather_loading(display, draw):
+    """Placeholder shown until the first weather reading arrives."""
+    font = display.font(14)
+    draw.text((MARGIN, display.height // 2 - 8), "Weather…", font=font, fill=WHITE)
+
+
+def _draw_weather_icon(draw, box, category, is_day):
+    """Draw the condition icon inside ``box`` (x0, y0, x1, y1), day/night aware."""
+    if category == weather.CLEAR:
+        if is_day:
+            _draw_sun(draw, box)
+        else:
+            _draw_moon(draw, box)
+    elif category == weather.PARTLY:
+        _draw_partly(draw, box, is_day)
+    elif category == weather.FOG:
+        _draw_fog(draw, box)
+    elif category == weather.RAIN:
+        _draw_cloud_with(draw, box, "rain")
+    elif category == weather.SNOW:
+        _draw_cloud_with(draw, box, "snow")
+    elif category == weather.THUNDER:
+        _draw_cloud_with(draw, box, "bolt")
+    else:   # CLOUDY and any unknown category
+        _draw_cloud(draw, box)
+
+
+def _draw_sun(draw, box):
+    """A sun: an outline disc with eight rays, centred in ``box``."""
+    x0, y0, x1, y1 = box
+    cx = (x0 + x1) / 2
+    cy = (y0 + y1) / 2
+    r = min(x1 - x0, y1 - y0) * 0.25
+    draw.ellipse((cx - r, cy - r, cx + r, cy + r), outline=WHITE, width=2)
+    for degrees in range(0, 360, 45):
+        angle = math.radians(degrees)
+        dx, dy = math.cos(angle), math.sin(angle)
+        draw.line((cx + dx * (r + 3), cy + dy * (r + 3),
+                   cx + dx * (r + 7), cy + dy * (r + 7)), fill=WHITE, width=2)
+
+
+def _draw_moon(draw, box):
+    """A crescent moon: a white disc with an offset black disc carved out of it."""
+    x0, y0, x1, y1 = box
+    cx = (x0 + x1) / 2
+    cy = (y0 + y1) / 2
+    r = min(x1 - x0, y1 - y0) * 0.38
+    draw.ellipse((cx - r, cy - r, cx + r, cy + r), fill=WHITE)
+    dx, dy = r * 0.55, -r * 0.25
+    draw.ellipse((cx - r + dx, cy - r + dy, cx + r + dx, cy + r + dy), fill=BLACK)
+
+
+def _cloud_shapes(box):
+    """Return the primitives that make up a cloud in ``box``: a base slab + three lobes."""
+    x0, y0, x1, y1 = box
+    w = x1 - x0
+    h = y1 - y0
+    base_top = y1 - h * 0.45
+    slab = (x0, base_top, x1, y1)
+    radius = h * 0.22
+    lobes = [
+        (x0 + w * 0.30, base_top - h * 0.02, h * 0.26),
+        (x0 + w * 0.52, y0 + h * 0.24, h * 0.30),
+        (x0 + w * 0.74, base_top - h * 0.05, h * 0.24),
+    ]
+    return slab, radius, lobes
+
+
+def _fill_cloud(draw, box, color, *, erode=0):
+    """Fill a cloud silhouette in ``color``; ``erode`` shrinks each primitive inward."""
+    (sx0, stop, sx1, sy1), radius, lobes = _cloud_shapes(box)
+    draw.rounded_rectangle((sx0 + erode, stop + erode, sx1 - erode, sy1 - erode),
+                           radius=max(1, radius - erode), fill=color)
+    for cx, cy, r in lobes:
+        rr = r - erode
+        draw.ellipse((cx - rr, cy - rr, cx + rr, cy + rr), fill=color)
+
+
+def _draw_cloud(draw, box):
+    """An outline cloud: a filled silhouette with an eroded black one carving its inside."""
+    _fill_cloud(draw, box, WHITE)
+    _fill_cloud(draw, box, BLACK, erode=2)
+
+
+def _draw_partly(draw, box, is_day):
+    """Sun (or moon) peeking from the top-left with a cloud overlapping its lower-right."""
+    x0, y0, x1, y1 = box
+    w = x1 - x0
+    h = y1 - y0
+    body = (x0, y0, x0 + w * 0.60, y0 + h * 0.60)
+    if is_day:
+        _draw_sun(draw, body)
+    else:
+        _draw_moon(draw, body)
+    _draw_cloud(draw, (x0 + w * 0.22, y0 + h * 0.32, x1, y1))
+
+
+def _draw_cloud_with(draw, box, extra):
+    """A cloud in the upper part of ``box`` with rain / snow / a bolt beneath it."""
+    x0, y0, x1, y1 = box
+    h = y1 - y0
+    _draw_cloud(draw, (x0, y0, x1, y0 + h * 0.68))
+    below_top = y0 + h * 0.72
+    if extra == "rain":
+        _draw_rain(draw, x0, x1, below_top, y1)
+    elif extra == "snow":
+        _draw_snow(draw, x0, x1, below_top, y1)
+    else:   # "bolt"
+        _draw_bolt(draw, (x0 + x1) / 2, below_top, y1)
+
+
+def _draw_rain(draw, x0, x1, top, bottom):
+    """Three short diagonal rain streaks between ``top`` and ``bottom``."""
+    w = x1 - x0
+    for i in range(3):
+        x = x0 + w * (0.28 + i * 0.22)
+        draw.line((x, top, x - 3, bottom), fill=WHITE, width=2)
+
+
+def _draw_snow(draw, x0, x1, top, bottom):
+    """Three small snowflakes between ``top`` and ``bottom``."""
+    w = x1 - x0
+    mid = (top + bottom) / 2
+    for i in range(3):
+        x = x0 + w * (0.28 + i * 0.22)
+        for degrees in (0, 60, 120):
+            angle = math.radians(degrees)
+            dx, dy = math.cos(angle) * 3, math.sin(angle) * 3
+            draw.line((x - dx, mid - dy, x + dx, mid + dy), fill=WHITE, width=1)
+
+
+def _draw_bolt(draw, cx, top, bottom):
+    """A lightning bolt centred at ``cx`` between ``top`` and ``bottom``."""
+    h = bottom - top
+    draw.polygon([
+        (cx + 3, top),
+        (cx - 4, top + h * 0.55),
+        (cx, top + h * 0.55),
+        (cx - 2, bottom),
+        (cx + 5, top + h * 0.40),
+        (cx + 1, top + h * 0.40),
+    ], fill=WHITE)
+
+
+def _draw_fog(draw, box):
+    """A small cloud above three horizontal fog lines."""
+    x0, y0, x1, y1 = box
+    h = y1 - y0
+    _draw_cloud(draw, (x0, y0, x1, y0 + h * 0.58))
+    for i in range(3):
+        y = y0 + h * (0.72 + i * 0.13)
+        draw.line((x0 + 4, y, x1 - 4, y), fill=WHITE, width=2)
+
+
+def _draw_clock(draw, x, y, size):
+    """A tiny clock face with two hands, top-left at ``(x, y)``."""
+    draw.ellipse((x, y, x + size, y + size), outline=WHITE, width=1)
+    cx, cy = x + size / 2, y + size / 2
+    draw.line((cx, cy, cx, cy - size * 0.32), fill=WHITE, width=1)
+    draw.line((cx, cy, cx + size * 0.28, cy), fill=WHITE, width=1)
+
+
+def _draw_pin(draw, x, y, size):
+    """A location marker (an outline ring with a centre dot), top-left at ``(x, y)``."""
+    draw.ellipse((x, y, x + size, y + size), outline=WHITE, width=1)
+    cx, cy = x + size / 2, y + size / 2
+    draw.ellipse((cx - 1, cy - 1, cx + 1, cy + 1), fill=WHITE)
 
 
 # --- Metric collection -------------------------------------------------------
@@ -477,8 +742,8 @@ def _raise_keyboard_interrupt(signum, frame):
     raise KeyboardInterrupt
 
 
-def run(display, args, hostname, sensors):
-    """Draw a single frame (``--once``) or loop the refresh until interrupted."""
+def run(display, args, hostname, sensors, weather_service):
+    """Draw a single frame (``--once``) or loop, alternating pages, until interrupted."""
     if args.once:
         # A short pause so the first cpu_percent reading is meaningful.
         time.sleep(0.7)
@@ -497,10 +762,27 @@ def run(display, args, hostname, sensors):
                 display.set_contrast(wanted)
                 applied_contrast = wanted
 
-            show_dashboard(display, collect_metrics(hostname, sensors))
+            _show_current_page(display, args, hostname, sensors, weather_service)
             time.sleep(args.interval)
     except KeyboardInterrupt:
         pass
+
+
+def _show_current_page(display, args, hostname, sensors, weather_service):
+    """Draw whichever page is due now — the dashboard, or the weather page on its turn.
+
+    Pages alternate on an ``args.page_seconds`` timer. The weather page joins the rotation
+    only when a weather service is running; otherwise the dashboard is always shown.
+    """
+    on_weather = False
+    if weather_service is not None:
+        slot = int(time.monotonic() // args.page_seconds)
+        on_weather = (slot % 2) == 1
+
+    if on_weather:
+        show_weather(display, weather_service.latest())
+    else:
+        show_dashboard(display, collect_metrics(hostname, sensors))
 
 
 def parse_args():
@@ -521,9 +803,26 @@ def parse_args():
     parser.add_argument("--night-end", type=int, default=6,
                         help="night window end hour 0..23, exclusive (default 6)")
     parser.add_argument("--interval", type=float, default=5.0,
-                        help="refresh period in seconds (default 5)")
+                        help="redraw period in seconds (default 5)")
     parser.add_argument("--once", action="store_true",
                         help="draw a single frame and exit (the frame stays on screen)")
+
+    # Weather page (a second screen the loop alternates with the dashboard).
+    parser.add_argument("--weather", action=argparse.BooleanOptionalAction, default=True,
+                        help="show the weather page in the rotation (default on; "
+                             "--no-weather to disable)")
+    parser.add_argument("--page-seconds", type=float, default=15.0,
+                        help="seconds each page is shown before switching (default 15)")
+    parser.add_argument("--weather-refresh", type=float, default=1800.0,
+                        help="how often to refetch the weather, in seconds (default 1800)")
+    parser.add_argument("--weather-timeout", type=float, default=6.0,
+                        help="network timeout for weather requests, in seconds (default 6)")
+    parser.add_argument("--latitude", type=float, default=None,
+                        help="fixed latitude (with --longitude) instead of IP geolocation")
+    parser.add_argument("--longitude", type=float, default=None,
+                        help="fixed longitude (with --latitude) instead of IP geolocation")
+    parser.add_argument("--city", type=str, default=None,
+                        help="place name to show (default: from geolocation)")
     return parser.parse_args()
 
 
@@ -547,11 +846,37 @@ def main():
     # Prime psutil.cpu_percent, otherwise the first reading returns 0.
     psutil.cpu_percent(interval=None)
 
+    weather_service = _start_weather(args)
+
     # In --once mode keep the frame on screen; in the loop, clear it on exit
     # (Ctrl-C or SIGTERM).
     with OledDisplay.open(bus=args.bus, address=args.address, rotate=args.rotate,
                           contrast=args.contrast, clear_on_close=not args.once) as display:
-        run(display, args, hostname, sensors)
+        run(display, args, hostname, sensors, weather_service)
+
+
+def _start_weather(args):
+    """Build and start the weather service, or return ``None`` when weather is off.
+
+    A fixed ``--latitude``/``--longitude`` pair skips IP geolocation; otherwise the service
+    resolves the location by IP on its own thread. Weather is never fetched in ``--once``.
+    """
+    if not args.weather or args.once:
+        return None
+
+    location = None
+    if args.latitude is not None and args.longitude is not None:
+        location = weather.Location(latitude=args.latitude, longitude=args.longitude,
+                                    city=args.city or "--")
+
+    service = weather.WeatherService(
+        refresh_seconds=args.weather_refresh,
+        timeout=args.weather_timeout,
+        location=location,
+        log=lambda message: print(message, flush=True),
+    )
+    service.start()
+    return service
 
 
 if __name__ == "__main__":

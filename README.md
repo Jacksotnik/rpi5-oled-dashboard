@@ -7,6 +7,12 @@ network uplink (Wi-Fi SSID with a signal-bars icon, or `LAN` on a wired link), I
 when a fan is present — its rpm (the row is hidden on fanless boards). At night
 (00:00–06:00 by default) the panel dims to slow OLED burn-in.
 
+Every 15 seconds the screen alternates with a **weather page** — the current temperature
+(°C), the day's high/low, a day/night condition icon, the time, date and place, and a
+"last updated" footer. Weather comes from [Open-Meteo](https://open-meteo.com) (free, no
+API key) for a location resolved automatically by IP, refreshed every 30 minutes on a
+background thread.
+
 > Roadmap: system metrics today; hardware sensors and their readouts next.
 
 The panel is driven by the **`oleddisplay`** library, installed into the venv from its own
@@ -17,7 +23,8 @@ repository — no copy is kept here:
 
 | Path | Purpose |
 |------|---------|
-| `stats_oled.py` | the app — metric collection, screen layout, refresh loop |
+| `stats_oled.py` | the app — metric collection, screen layout, refresh loop, page rotation |
+| `weather.py` | weather data layer: IP geolocation + Open-Meteo fetch on a background thread |
 | `requirements.txt` | venv deps: the `oleddisplay` library (from git) + `psutil` |
 | `oled-stats.service` | systemd unit, installed to `/etc/systemd/system/` on the Pi |
 | `install.sh` | one-command first install on the Pi |
@@ -69,6 +76,9 @@ RestartSec=3
   brightness (0..255; the SH1107 default is 127, so dim below that). `--night-contrast 16`
   dims the panel during the night window **00:00–06:00** (set with `--night-start` /
   `--night-end`, Pi local time); it needs `--contrast` as the daytime value to restore to.
+- Weather page: on by default. `--no-weather` disables it, `--page-seconds` sets the
+  switch cadence (default 15), `--weather-refresh` the fetch period (default 1800 s). A
+  fixed `--latitude`/`--longitude` (with optional `--city`) skips IP geolocation.
 - The screen **blanks on stop/shutdown**: the app catches SIGTERM and clears the panel, so
   the last frame doesn't stay burned on until power-off.
 
