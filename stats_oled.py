@@ -52,13 +52,13 @@ BLACK = "black"
 # The header shows the device name (left) and uptime (right); the data rows below
 # justify a regular label to the left edge and a bold value to the right edge.
 # Temperatures are shown as "47°" (degree sign only) to stay compact.
-TITLE_SIZE = 12    # header font (device name + uptime)
-BODY_SIZE = 10     # both label (regular) and value (bold) of the data rows
-MARGIN = 3         # left/right screen margin
+TITLE_SIZE = 13    # header font (device name + uptime)
+BODY_SIZE = 11     # both label (regular) and value (bold) of the data rows
+MARGIN = 1         # left/right screen margin (label/value ink is pinned to it)
 LABEL_GAP = 4      # minimum gap between a label and its right-aligned value
-TITLE_TOP = 3      # y of the header row
-ROWS_TOP = 24      # y of the first data row (small gap below the header)
-ROW_STEP = 17      # vertical step between data rows (up to six rows fill the panel)
+TITLE_TOP = 1      # y of the header row
+ROWS_TOP = 21      # y of the first data row (small gap below the header)
+ROW_STEP = 18      # vertical step between data rows (up to six rows fill the panel)
 
 # --- Wi-Fi signal icon (ascending bars) --------------------------------------
 # A tiny signal meter drawn at the right end of the NET row when it shows Wi-Fi: WIFI_BARS
@@ -99,20 +99,21 @@ class ScreenWriter:
     def row(self, label, value, *, label_font, value_font, advance):
         """Draw a left-aligned ``label`` and a right-aligned ``value`` on one row.
 
-        The label sits at the left margin; the value is justified to the right margin.
-        If the value would collide with the label it is truncated with an ellipsis.
+        Both are pinned by their ink: the label's leftmost lit pixel lands on the left
+        margin and the value's rightmost lit pixel on the right margin, so the two visible
+        margins are equal (drawing at the raw pen instead leaves the glyph's left side
+        bearing as extra space on the left only). If the value would collide with the label
+        it is truncated with an ellipsis.
 
         :param label_font: font for the label (regular).
         :param value_font: font for the value (bold, same size as the label).
         :param advance: pixels to move the cursor down after the row.
         """
-        self._draw.text((self._margin, self._y), label, font=label_font, fill=WHITE)
-        label_right = self._margin + label_font.getlength(label)
         right_edge = self._display.width - self._margin
+        label_right = _draw_ink_left(self._draw, self._margin, self._y, label, label_font)
         cell_width = right_edge - (label_right + LABEL_GAP)
         fitted = _fit_width(value, value_font, cell_width)
-        x = right_edge - value_font.getlength(fitted)
-        self._draw.text((int(x), self._y), fitted, font=value_font, fill=WHITE)
+        _draw_ink_right(self._draw, right_edge, self._y, fitted, value_font)
         self._y += advance
 
     def wifi_row(self, label, name, signal, *, label_font, value_font, advance):
@@ -122,16 +123,14 @@ class ScreenWriter:
         :param name: the network name (already ``"--"`` when disconnected).
         :param signal: signal strength 0..100, or ``None`` (icon drawn empty).
         """
-        self._draw.text((self._margin, self._y), label, font=label_font, fill=WHITE)
         right_edge = self._display.width - self._margin
         icon_left = _draw_wifi_bars(self._draw, right=right_edge,
                                     baseline=self._y + BODY_SIZE, signal=signal)
         name_right = icon_left - WIFI_ICON_GAP
-        label_right = self._margin + label_font.getlength(label)
+        label_right = _draw_ink_left(self._draw, self._margin, self._y, label, label_font)
         cell_width = name_right - (label_right + LABEL_GAP)
         fitted = _fit_width(name, value_font, cell_width)
-        x = name_right - value_font.getlength(fitted)
-        self._draw.text((int(x), self._y), fitted, font=value_font, fill=WHITE)
+        _draw_ink_right(self._draw, name_right, self._y, fitted, value_font)
         self._y += advance
 
 
@@ -175,6 +174,24 @@ def show_dashboard(display, metrics):
         draw_dashboard(display, draw, metrics)
 
     display.render(paint)
+
+
+def _draw_ink_left(draw, x, y, text, font):
+    """Draw ``text`` so its leftmost lit pixel lands on ``x``; return the ink's right x.
+
+    ``draw.text`` places the pen at the glyph origin, which sits a hair left of the first
+    glyph's ink by its side bearing; shifting left by that bearing makes the visible left
+    edge land exactly on ``x``, matching a right edge placed the same way.
+    """
+    ink_left, _, ink_right, _ = font.getbbox(text)
+    draw.text((int(x - ink_left), y), text, font=font, fill=WHITE)
+    return x - ink_left + ink_right
+
+
+def _draw_ink_right(draw, right_x, y, text, font):
+    """Draw ``text`` so its rightmost lit pixel lands on ``right_x``."""
+    ink_left, _, ink_right, _ = font.getbbox(text)
+    draw.text((int(right_x - ink_right), y), text, font=font, fill=WHITE)
 
 
 def _fit_width(text, font, max_width):
