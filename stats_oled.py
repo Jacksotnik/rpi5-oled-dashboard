@@ -19,7 +19,7 @@ temperature, high/low and conditions from :mod:`weather`), picking the due page 
 :func:`oleddisplay.due_page_index`.
 """
 
-__version__ = "1.9.19"
+__version__ = "1.9.20"
 
 import argparse
 import math
@@ -202,7 +202,7 @@ WX_HILO_GAP = 2      # extra blank px after the high/low line (17 px line + 2 = 
 WX_ROW_GAP = 1       # extra blank px after the time / date rows (17 px line + 1 = 18 px step)
 
 TIME_SIZE = 17
-CITY_GAP = 10
+CITY_GAP = 12
 
 
 def _round_temp(value):
