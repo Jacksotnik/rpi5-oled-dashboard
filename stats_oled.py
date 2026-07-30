@@ -18,7 +18,7 @@ temperature, high/low and conditions from :mod:`weather`), picking the due page 
 :func:`oleddisplay.due_page_index`.
 """
 
-__version__ = "1.4.0"
+__version__ = "1.6.0"
 
 import argparse
 import math
@@ -184,24 +184,21 @@ def _draw_wifi_bars(draw, *, right, baseline, signal):
 
 
 # --- Weather page ------------------------------------------------------------
-# A second screen the loop alternates with the dashboard: the big current temperature and
-# the day's high/low on the left, a condition icon (day/night aware) top-right, then the
-# time, date and place, and a footer with the last-refresh time. All icons are drawn from
-# primitives (like the Wi-Fi bars) in an outline style that keeps lit pixels — and burn-in
-# — low.
+# A second screen the loop alternates with the dashboard. The whole page is constructed
+# from the oleddisplay building blocks: show_custom paints the header — the big current
+# temperature with a condition icon (day/night aware) top-right — and set_font /
+# show_line / show_empty_line stack the text under it; display.show() then puts the
+# finished screen on the panel as a single frame. The icon is drawn from primitives
+# (like the Wi-Fi bars) in an outline style that keeps lit pixels — and burn-in — low.
 WX_TEMP_SIZE = 33    # big current-temperature number
 WX_UNIT_SIZE = 15    # the "C" unit beside the big number
 WX_HILO_SIZE = 13    # the day's high / low
 WX_ROW_SIZE = 13     # the time / date / city rows
-WX_FOOT_SIZE = 10    # the "Updated …" footer
 WX_TEMP_TOP = 4      # y of the big temperature
-WX_HILO_Y = 41       # y of the high / low line
-WX_TIME_Y = 60       # y of the time row
-WX_DATE_Y = 78       # y of the date row
-WX_CITY_Y = 96       # y of the city row
-WX_FOOT_Y = 115      # y of the footer
 WX_ICON_BOX = (82, 6, 124, 46)   # (x0, y0, x1, y1) box for the condition icon
-WX_GLYPH = 10        # size of the small clock / pin glyphs on the rows
+WX_BODY_TOP = 41     # y where the block-built body starts, under the temperature / icon
+WX_HILO_GAP = 2      # extra blank px after the high/low line (17 px line + 2 = 19 px step)
+WX_ROW_GAP = 1       # extra blank px after the time / date rows (17 px line + 1 = 18 px step)
 
 
 def _round_temp(value):
@@ -211,18 +208,8 @@ def _round_temp(value):
     return f"{value:.0f}"
 
 
-def draw_weather(display, draw, data, now):
-    """Draw the weather page: big current temp, day high/low, a condition icon and place.
-
-    ``data`` is the latest :class:`weather.WeatherData` (``None`` before the first fetch);
-    ``now`` is a ``time.struct_time`` used for the clock and date rows.
-    """
-    if data is None:
-        _draw_weather_loading(display, draw)
-        return
-
-    right = display.width - MARGIN
-
+def _draw_weather_header(display, draw, data):
+    """The custom top of the weather page: the big temperature and the condition icon."""
     # Big current temperature, e.g. "12°" with a smaller "C" tucked to its right.
     temp_font = display.font(WX_TEMP_SIZE, bold=True)
     unit_font = display.font(WX_UNIT_SIZE, bold=True)
@@ -232,46 +219,45 @@ def draw_weather(display, draw, data, now):
     draw.text((unit_x, WX_TEMP_TOP + WX_TEMP_SIZE - WX_UNIT_SIZE - 3),
               "C", font=unit_font, fill=WHITE)
 
-    # The day's high / low.
-    hilo_font = display.font(WX_HILO_SIZE)
-    draw.text((MARGIN, WX_HILO_Y),
-              f"{_round_temp(data.high)}° / {_round_temp(data.low)}°",
-              font=hilo_font, fill=WHITE)
-
     # Condition icon, top-right, day/night aware.
     _draw_weather_icon(draw, WX_ICON_BOX, data.category, data.is_day)
 
-    # Time (24-hour), date and city.
-    row_font = display.font(WX_ROW_SIZE, bold=True)
-    date_font = display.font(WX_ROW_SIZE)
-    glyph_gap = WX_GLYPH + 5
-
-    _draw_clock(draw, MARGIN, WX_TIME_Y + 1, WX_GLYPH)
-    draw.text((MARGIN + glyph_gap, WX_TIME_Y), time.strftime("%H:%M", now),
-              font=row_font, fill=WHITE)
-
-    draw.text((MARGIN, WX_DATE_Y), time.strftime("%a, %d %b", now),
-              font=date_font, fill=WHITE)
-
-    _draw_pin(draw, MARGIN, WX_CITY_Y + 1, WX_GLYPH)
-    city_x = MARGIN + glyph_gap
-    city = layout.fit_text(row_font, data.city, right - city_x)
-    draw.text((city_x, WX_CITY_Y), city, font=row_font, fill=WHITE)
-
-    # Footer: when the reading was last refreshed.
-#     foot_font = display.font(WX_FOOT_SIZE)
-#     updated = time.strftime("%d %b %H:%M", time.localtime(data.updated))
-#     draw.text((MARGIN, WX_FOOT_Y), f"Updated {updated}", font=foot_font, fill=WHITE)
-
 
 def show_weather(display, data):
-    """Render one full frame of the weather page to the panel."""
+    """Show the weather page: the custom header on top, a block-built body under it.
+
+    ``data`` is the latest :class:`weather.WeatherData` (``None`` before the first fetch).
+    The screen is constructed from the display's building blocks — the custom-drawn
+    header, then the high/low, time, date and city as plain text stacked top-down — and
+    display.show() puts it on the panel as one frame.
+    """
+    if data is None:
+        def paint(draw):
+            _draw_weather_loading(display, draw)
+        display.render(paint)
+        return
+
     now = time.localtime()
 
-    def paint(draw):
-        draw_weather(display, draw, data, now)
+    def paint_header(draw):
+        _draw_weather_header(display, draw, data)
 
-    display.render(paint)
+    display.show_custom(paint_header)
+    display.show_empty_line(WX_BODY_TOP)
+    display.set_font("sans", WX_HILO_SIZE)
+    display.show_line(f"{_round_temp(data.high)}° / {_round_temp(data.low)}°")
+    display.show_empty_line(WX_HILO_GAP)
+    display.set_font("sans", WX_ROW_SIZE, "bold")
+    display.show_line(time.strftime("%H:%M", now))
+    display.show_empty_line(WX_ROW_GAP)
+    display.set_font("sans", WX_ROW_SIZE)
+    display.show_line(time.strftime("%a, %d %b", now))
+    display.show_empty_line(WX_ROW_GAP)
+    display.set_font("sans", WX_ROW_SIZE, "bold")
+    display.show_line(data.city)
+    display.show()
+
+    display.set_font()   # don't leak the weather font into the other screens
 
 
 def _draw_weather_loading(display, draw):
@@ -426,21 +412,6 @@ def _draw_fog(draw, box):
     for i in range(3):
         y = y0 + h * (0.72 + i * 0.13)
         draw.line((x0 + 4, y, x1 - 4, y), fill=WHITE, width=2)
-
-
-def _draw_clock(draw, x, y, size):
-    """A tiny clock face with two hands, top-left at ``(x, y)``."""
-    draw.ellipse((x, y, x + size, y + size), outline=WHITE, width=1)
-    cx, cy = x + size / 2, y + size / 2
-    draw.line((cx, cy, cx, cy - size * 0.32), fill=WHITE, width=1)
-    draw.line((cx, cy, cx + size * 0.28, cy), fill=WHITE, width=1)
-
-
-def _draw_pin(draw, x, y, size):
-    """A location marker (an outline ring with a centre dot), top-left at ``(x, y)``."""
-    draw.ellipse((x, y, x + size, y + size), outline=WHITE, width=1)
-    cx, cy = x + size / 2, y + size / 2
-    draw.ellipse((cx - 1, cy - 1, cx + 1, cy + 1), fill=WHITE)
 
 
 # --- Metric collection -------------------------------------------------------
