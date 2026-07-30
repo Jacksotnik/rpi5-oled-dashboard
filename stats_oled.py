@@ -19,7 +19,7 @@ temperature, high/low and conditions from :mod:`weather`), picking the due page 
 :func:`oleddisplay.due_page_index`.
 """
 
-__version__ = "1.9.5"
+__version__ = "1.9.6"
 
 import argparse
 import math
@@ -133,7 +133,7 @@ def show_dashboard(display, metrics):
     else:
         display.show_columns([["NET:", MISSING]], ROW_WIDTHS, ROW_ALIGNS, ROW_STYLES)
 
-    display.show_columns([["IP:", metrics.ip]], [17, 83], ROW_ALIGNS, ROW_STYLES)
+    display.show_columns([["IP:", metrics.ip]], [15, 85], ROW_ALIGNS, ROW_STYLES)
 
     # Fan row only on boards that actually have a fan (else metrics.fan is None).
     if metrics.fan is not None:
