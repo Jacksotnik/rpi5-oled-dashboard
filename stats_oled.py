@@ -19,7 +19,7 @@ temperature, high/low and conditions from :mod:`weather`), picking the due page 
 :func:`oleddisplay.due_page_index`.
 """
 
-__version__ = "1.9.16"
+__version__ = "1.9.17"
 
 import argparse
 import math
@@ -83,7 +83,7 @@ WIFI_BAR_WIDTH = 3     # px width of each bar (>=3 so a hollow bar shows an inte
 WIFI_BAR_GAP = 1       # px gap between bars
 WIFI_BAR_MIN_H = 3     # height of the shortest (leftmost) bar
 WIFI_BAR_STEP = 2      # each bar is this many px taller than the one before it
-WIFI_ICON_BOX = (109, 61, 124, 70)   # (x0, y0, x1, y1); only the right edge and bottom matter
+WIFI_ICON_BOX = (109, 55, 124, 64)   # (x0, y0, x1, y1); only the right edge and bottom matter
 
 Metrics = namedtuple(
     "Metrics",
