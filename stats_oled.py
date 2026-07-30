@@ -133,7 +133,7 @@ def show_dashboard(display, metrics):
     else:
         display.show_columns([["NET:", MISSING]], ROW_WIDTHS, ROW_ALIGNS, ROW_STYLES)
 
-    display.show_columns([["IP:", metrics.ip]], [13, 87], ROW_ALIGNS, ROW_STYLES)
+    display.show_columns([["IP:", metrics.ip]], [12, 88], ROW_ALIGNS, ROW_STYLES)
 
     # Fan row only on boards that actually have a fan (else metrics.fan is None).
     if metrics.fan is not None:
