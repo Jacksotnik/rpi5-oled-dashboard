@@ -19,7 +19,7 @@ temperature, high/low and conditions from :mod:`weather`), picking the due page 
 :func:`oleddisplay.due_page_index`.
 """
 
-__version__ = "1.9.0"
+__version__ = "1.9.1"
 
 import argparse
 import math
@@ -120,12 +120,12 @@ def show_dashboard(display, metrics):
     display.show_columns([[f"{metrics.disk_label}:", metrics.ssd]], [25, 75], ROW_ALIGNS, ROW_STYLES)
 
     # NET row: Wi-Fi shows the SSID with a signal-bars icon painted over the reserved right
-        # column, a wired uplink shows "LAN", and no uplink shows the "--" placeholder.
-        if metrics.net_kind == "wifi":
-            display.show_columns([["NET:", metrics.ssid, ""]],
-                                 (25, 55, 20), NET_ALIGNS, NET_STYLES)
-            display.show_custom(
-                lambda draw: _draw_wifi_bars(draw, right=WIFI_ICON_BOX[2],
+    # column, a wired uplink shows "LAN", and no uplink shows the "--" placeholder.
+    if metrics.net_kind == "wifi":
+        display.show_columns([["NET:", metrics.ssid, ""]], [25, 55, 20], NET_ALIGNS, NET_STYLES)
+
+        display.show_custom(
+        lambda draw: _draw_wifi_bars(draw, right=WIFI_ICON_BOX[2],
                                              baseline=WIFI_ICON_BOX[3],
                                              signal=metrics.wifi_signal))
 
