@@ -19,7 +19,7 @@ temperature, high/low and conditions from :mod:`weather`), picking the due page 
 :func:`oleddisplay.due_page_index`.
 """
 
-__version__ = "1.9.18"
+__version__ = "1.9.19"
 
 import argparse
 import math
