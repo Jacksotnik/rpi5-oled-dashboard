@@ -19,7 +19,7 @@ temperature, high/low and conditions from :mod:`weather`), picking the due page 
 :func:`oleddisplay.due_page_index`.
 """
 
-__version__ = "1.8.0"
+__version__ = "1.9.0"
 
 import argparse
 import math
@@ -107,31 +107,33 @@ def show_dashboard(display, metrics):
     # Header: hostname on the left, uptime on the right, both in the bold title font.
     display.set_font("sans", TITLE_SIZE)
     display.show_columns([[metrics.hostname, metrics.uptime]],
-                         [70, 30], ROW_ALIGNS, ("bold", "bold"))
+                         [50, 50], ROW_ALIGNS, ("bold", "bold"))
 
     # Data rows: a regular label pinned left, a bold value pinned right.
     display.set_font("sans", BODY_SIZE)
 
-    display.show_columns([["CPU:", metrics.cpu]], [20, 80], ROW_ALIGNS, ROW_STYLES)
+    display.show_columns([["CPU:", metrics.cpu]], [25, 75], ROW_ALIGNS, ROW_STYLES)
 
-    display.show_columns([["RAM:", metrics.ram]], [20, 80], ROW_ALIGNS, ROW_STYLES)
+    display.show_columns([["RAM:", metrics.ram]], [25, 75], ROW_ALIGNS, ROW_STYLES)
 
     # Root disk: the label is "SSD" or "SD" depending on the medium backing "/".
-    display.show_columns([[f"{metrics.disk_label}:", metrics.ssd]], [20, 80], ROW_ALIGNS, ROW_STYLES)
+    display.show_columns([[f"{metrics.disk_label}:", metrics.ssd]], [25, 75], ROW_ALIGNS, ROW_STYLES)
+
+    # NET row: Wi-Fi shows the SSID with a signal-bars icon painted over the reserved right
+        # column, a wired uplink shows "LAN", and no uplink shows the "--" placeholder.
+        if metrics.net_kind == "wifi":
+            display.show_columns([["NET:", metrics.ssid, ""]],
+                                 (25, 55, 20), NET_ALIGNS, NET_STYLES)
+            display.show_custom(
+                lambda draw: _draw_wifi_bars(draw, right=WIFI_ICON_BOX[2],
+                                             baseline=WIFI_ICON_BOX[3],
+                                             signal=metrics.wifi_signal))
 
 
     def data_row(label, value):
         display.show_columns([[label, value]], ROW_WIDTHS, ROW_ALIGNS, ROW_STYLES)
 
-    # NET row: Wi-Fi shows the SSID with a signal-bars icon painted over the reserved right
-    # column, a wired uplink shows "LAN", and no uplink shows the "--" placeholder.
-    if metrics.net_kind == "wifi":
-        display.show_columns([["NET:", metrics.ssid, ""]],
-                             NET_WIDTHS, NET_ALIGNS, NET_STYLES)
-        display.show_custom(
-            lambda draw: _draw_wifi_bars(draw, right=WIFI_ICON_BOX[2],
-                                         baseline=WIFI_ICON_BOX[3],
-                                         signal=metrics.wifi_signal))
+
     elif metrics.net_kind == "wired":
         data_row("NET:", "LAN")
     else:
