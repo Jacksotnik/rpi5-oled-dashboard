@@ -76,14 +76,18 @@ NET_STYLES = ("regular", "bold", "regular")
 # --- Wi-Fi signal icon (ascending bars) --------------------------------------
 # A tiny signal meter painted with show_custom() on the right of the NET row: WIFI_BARS
 # bars of growing height; the ones covered by the current signal are solid, the rest
-# hollow outlines. WIFI_ICON_BOX is its absolute (x0, y0, x1, y1) region — tune it to sit
-# on the NET row, the same way the weather icon uses WX_ICON_BOX.
+# hollow outlines. Its right edge is a fixed panel-relative x (the reserved NET column
+# never moves sideways), but its *vertical* position is read from the display cursor at
+# draw time (see show_dashboard) so the icon rides the NET row instead of a hardcoded y
+# that drifts whenever the rows above it change.
 WIFI_BARS = 4          # number of bars
 WIFI_BAR_WIDTH = 3     # px width of each bar (>=3 so a hollow bar shows an interior gap)
 WIFI_BAR_GAP = 1       # px gap between bars
 WIFI_BAR_MIN_H = 3     # height of the shortest (leftmost) bar
 WIFI_BAR_STEP = 2      # each bar is this many px taller than the one before it
-WIFI_ICON_BOX = (109, 82, 124, 91)   # (x0, y0, x1, y1); only the right edge and bottom matter
+WIFI_ICON_RIGHT = 124  # x of the icon's right edge (panel-relative; the reserved NET column)
+WIFI_ICON_LIFT = 3     # px the icon's bottom sits above the NET row's bottom (≈ font descent),
+                       # so the bars line up with the SSID text baseline
 
 Metrics = namedtuple(
     "Metrics",
@@ -128,10 +132,14 @@ def show_dashboard(display, metrics):
     if metrics.net_kind == "wifi":
         display.show_columns([["NET:", metrics.ssid, ""]], [25, 55, 20], NET_ALIGNS, NET_STYLES)
 
+        # The cursor now sits at the NET row's bottom edge, so pinning the icon to it (minus a
+        # small lift onto the text baseline) keeps the bars on the row no matter how the rows
+        # above change — no more re-tuning an absolute y.
+        net_row_bottom = display.cursor_y
         display.show_custom(
-        lambda draw: _draw_wifi_bars(draw, right=WIFI_ICON_BOX[2],
-                                             baseline=WIFI_ICON_BOX[3],
-                                             signal=metrics.wifi_signal))
+            lambda draw: _draw_wifi_bars(draw, right=WIFI_ICON_RIGHT,
+                                                 baseline=net_row_bottom - WIFI_ICON_LIFT,
+                                                 signal=metrics.wifi_signal))
     elif metrics.net_kind == "wired":
         display.show_columns([["NET:", "LAN"]], ROW_WIDTHS, ROW_ALIGNS, ROW_STYLES)
     else:
