@@ -19,7 +19,7 @@ temperature, high/low and conditions from :mod:`weather`), picking the due page 
 :func:`oleddisplay.due_page_index`.
 """
 
-__version__ = "1.9.26"
+__version__ = "1.9.27"
 
 import argparse
 import math
@@ -110,27 +110,27 @@ def show_dashboard(display, metrics):
     """
     # Header: hostname on the left, uptime on the right, both in the bold title font.
     display.set_font("sans", TITLE_SIZE)
-    display.show_columns([[metrics.hostname, metrics.uptime]], [50, 50], ROW_ALIGNS, ("bold", "regular"))
+    display.show_columns([[metrics.hostname, metrics.uptime]], [60, 50], ROW_ALIGNS, ("bold", "regular"))
 
     # Data rows: a regular label pinned left, a bold value pinned right.
     display.set_font("sans", BODY_SIZE)
 
     display.show_line("-------------------------------")
 
-    display.show_columns([["CPU:", metrics.cpu]], [22, 78], ROW_ALIGNS, ROW_STYLES)
+    display.show_columns([["CPU:", metrics.cpu]], [23, 77], ROW_ALIGNS, ROW_STYLES)
     display.show_empty_line(1)
 
-    display.show_columns([["RAM:", metrics.ram]], [22, 78], ROW_ALIGNS, ROW_STYLES)
+    display.show_columns([["RAM:", metrics.ram]], [23, 77], ROW_ALIGNS, ROW_STYLES)
     display.show_empty_line(1)
 
     # Root disk: the label is "SSD" or "SD" depending on the medium backing "/".
-    display.show_columns([[f"{metrics.disk_label}:", metrics.ssd]], [22, 78], ROW_ALIGNS, ROW_STYLES)
+    display.show_columns([[f"{metrics.disk_label}:", metrics.ssd]], [23, 77], ROW_ALIGNS, ROW_STYLES)
     display.show_empty_line(1)
 
     # NET row: Wi-Fi shows the SSID with a signal-bars icon painted over the reserved right
     # column, a wired uplink shows "LAN", and no uplink shows the "--" placeholder.
     if metrics.net_kind == "wifi":
-        display.show_columns([["NET:", metrics.ssid, ""]], [22, 58, 20], NET_ALIGNS, NET_STYLES)
+        display.show_columns([["NET:", metrics.ssid, ""]], [23, 57, 20], NET_ALIGNS, NET_STYLES)
 
         # The cursor now sits at the NET row's bottom edge, so pinning the icon to it (minus a
         # small lift onto the text baseline) keeps the bars on the row no matter how the rows
@@ -141,9 +141,9 @@ def show_dashboard(display, metrics):
                                                  baseline=net_row_bottom - WIFI_ICON_LIFT,
                                                  signal=metrics.wifi_signal))
     elif metrics.net_kind == "wired":
-        display.show_columns([["NET:", "LAN"]], [22, 78], ROW_ALIGNS, ROW_STYLES)
+        display.show_columns([["NET:", "LAN"]], [23, 77], ROW_ALIGNS, ROW_STYLES)
     else:
-        display.show_columns([["NET:", MISSING]], [22, 78], ROW_ALIGNS, ROW_STYLES)
+        display.show_columns([["NET:", MISSING]], [23, 77], ROW_ALIGNS, ROW_STYLES)
 
     display.show_empty_line(1)
 
@@ -152,7 +152,7 @@ def show_dashboard(display, metrics):
 
     # Fan row only on boards that actually have a fan (else metrics.fan is None).
     if metrics.fan is not None:
-        display.show_columns([["FAN:", metrics.fan]], [22, 78], ROW_ALIGNS, ROW_STYLES)
+        display.show_columns([["FAN:", metrics.fan]], [23, 77], ROW_ALIGNS, ROW_STYLES)
 
     display.show()
 
