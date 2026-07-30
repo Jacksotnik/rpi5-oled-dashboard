@@ -202,7 +202,7 @@ WX_HILO_GAP = 2      # extra blank px after the high/low line (17 px line + 2 = 
 WX_ROW_GAP = 1       # extra blank px after the time / date rows (17 px line + 1 = 18 px step)
 
 TIME_SIZE = 17
-CITY_GAP = 7
+CITY_GAP = 10
 
 
 def _round_temp(value):
