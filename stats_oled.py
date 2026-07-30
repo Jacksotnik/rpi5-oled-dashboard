@@ -19,7 +19,7 @@ temperature, high/low and conditions from :mod:`weather`), picking the due page 
 :func:`oleddisplay.due_page_index`.
 """
 
-__version__ = "1.9.21"
+__version__ = "1.9.22"
 
 import argparse
 import math
@@ -108,7 +108,7 @@ def show_dashboard(display, metrics):
     display.set_font("sans", TITLE_SIZE)
     display.show_columns([[metrics.hostname, metrics.uptime]], [50, 50], ROW_ALIGNS, ("bold", "bold"))
 
-    display.show_line("---------------------------")
+    display.show_line("--------------------------")
 
     # Data rows: a regular label pinned left, a bold value pinned right.
     display.set_font("sans", BODY_SIZE)
