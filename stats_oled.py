@@ -18,7 +18,7 @@ temperature, high/low and conditions from :mod:`weather`), picking the due page 
 :func:`oleddisplay.due_page_index`.
 """
 
-__version__ = "1.3.0"
+__version__ = "1.4.0"
 
 import argparse
 import math
@@ -259,9 +259,9 @@ def draw_weather(display, draw, data, now):
     draw.text((city_x, WX_CITY_Y), city, font=row_font, fill=WHITE)
 
     # Footer: when the reading was last refreshed.
-    foot_font = display.font(WX_FOOT_SIZE)
-    updated = time.strftime("%d %b %H:%M", time.localtime(data.updated))
-    draw.text((MARGIN, WX_FOOT_Y), f"Updated {updated}", font=foot_font, fill=WHITE)
+#     foot_font = display.font(WX_FOOT_SIZE)
+#     updated = time.strftime("%d %b %H:%M", time.localtime(data.updated))
+#     draw.text((MARGIN, WX_FOOT_Y), f"Updated {updated}", font=foot_font, fill=WHITE)
 
 
 def show_weather(display, data):
