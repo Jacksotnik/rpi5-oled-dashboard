@@ -19,7 +19,7 @@ temperature, high/low and conditions from :mod:`weather`), picking the due page 
 :func:`oleddisplay.due_page_index`.
 """
 
-__version__ = "1.7.0"
+__version__ = "1.8.0"
 
 import argparse
 import math
@@ -107,18 +107,22 @@ def show_dashboard(display, metrics):
     # Header: hostname on the left, uptime on the right, both in the bold title font.
     display.set_font("sans", TITLE_SIZE)
     display.show_columns([[metrics.hostname, metrics.uptime]],
-                         ROW_WIDTHS, ROW_ALIGNS, ("bold", "bold"))
+                         [70, 30], ROW_ALIGNS, ("bold", "bold"))
 
     # Data rows: a regular label pinned left, a bold value pinned right.
     display.set_font("sans", BODY_SIZE)
 
+    display.show_columns([["CPU:", metrics.cpu]], [20, 80], ROW_ALIGNS, ROW_STYLES)
+
+    display.show_columns([["RAM:", metrics.ram]], [20, 80], ROW_ALIGNS, ROW_STYLES)
+
+    # Root disk: the label is "SSD" or "SD" depending on the medium backing "/".
+    display.show_columns([[f"{metrics.disk_label}:", metrics.ssd]], [20, 80], ROW_ALIGNS, ROW_STYLES)
+
+
     def data_row(label, value):
         display.show_columns([[label, value]], ROW_WIDTHS, ROW_ALIGNS, ROW_STYLES)
 
-    data_row("CPU:", metrics.cpu)
-    data_row("RAM:", metrics.ram)
-    # Root disk: the label is "SSD" or "SD" depending on the medium backing "/".
-    data_row(f"{metrics.disk_label}:", metrics.ssd)
     # NET row: Wi-Fi shows the SSID with a signal-bars icon painted over the reserved right
     # column, a wired uplink shows "LAN", and no uplink shows the "--" placeholder.
     if metrics.net_kind == "wifi":
@@ -192,8 +196,8 @@ WX_BODY_TOP = 41     # y where the block-built body starts, under the temperatur
 WX_HILO_GAP = 2      # extra blank px after the high/low line (17 px line + 2 = 19 px step)
 WX_ROW_GAP = 1       # extra blank px after the time / date rows (17 px line + 1 = 18 px step)
 
-TIME_SIZE = 15
-CITY_GAP = 5
+TIME_SIZE = 17
+CITY_GAP = 7
 
 
 def _round_temp(value):
