@@ -19,7 +19,7 @@ temperature, high/low and conditions from :mod:`weather`), picking the due page 
 :func:`oleddisplay.due_page_index`.
 """
 
-__version__ = "1.9.17"
+__version__ = "1.9.18"
 
 import argparse
 import math
@@ -83,7 +83,7 @@ WIFI_BAR_WIDTH = 3     # px width of each bar (>=3 so a hollow bar shows an inte
 WIFI_BAR_GAP = 1       # px gap between bars
 WIFI_BAR_MIN_H = 3     # height of the shortest (leftmost) bar
 WIFI_BAR_STEP = 2      # each bar is this many px taller than the one before it
-WIFI_ICON_BOX = (109, 55, 124, 64)   # (x0, y0, x1, y1); only the right edge and bottom matter
+WIFI_ICON_BOX = (109, 82, 124, 91)   # (x0, y0, x1, y1); only the right edge and bottom matter
 
 Metrics = namedtuple(
     "Metrics",
@@ -120,7 +120,7 @@ def show_dashboard(display, metrics):
     display.show_empty_line(1)
 
     # Root disk: the label is "SSD" or "SD" depending on the medium backing "/".
-    display.show_columns([[f"{metrics.disk_label}:", metrics.ssd]], [21, 79], ROW_ALIGNS, ROW_STYLES)
+    display.show_columns([[f"{metrics.disk_label}:", metrics.ssd]], [22, 78], ROW_ALIGNS, ROW_STYLES)
     display.show_empty_line(1)
 
     # NET row: Wi-Fi shows the SSID with a signal-bars icon painted over the reserved right
