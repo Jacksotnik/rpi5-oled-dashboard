@@ -19,7 +19,7 @@ temperature, high/low and conditions from :mod:`weather`), picking the due page 
 :func:`oleddisplay.due_page_index`.
 """
 
-__version__ = "1.9.1"
+__version__ = "1.9.2"
 
 import argparse
 import math
@@ -128,20 +128,27 @@ def show_dashboard(display, metrics):
         lambda draw: _draw_wifi_bars(draw, right=WIFI_ICON_BOX[2],
                                              baseline=WIFI_ICON_BOX[3],
                                              signal=metrics.wifi_signal))
-
-
-    def data_row(label, value):
-        display.show_columns([[label, value]], ROW_WIDTHS, ROW_ALIGNS, ROW_STYLES)
-
-
     elif metrics.net_kind == "wired":
-        data_row("NET:", "LAN")
+        display.show_columns([["NET:", "LAN"]], ROW_WIDTHS, ROW_ALIGNS, ROW_STYLES)
+#         data_row("NET:", "LAN")
     else:
-        data_row("NET:", MISSING)
-    data_row("IP:", metrics.ip)
+        display.show_columns([["NET:", MISSING]], ROW_WIDTHS, ROW_ALIGNS, ROW_STYLES)
+#         data_row("NET:", MISSING)
+
+
+#     def data_row(label, value):
+#         display.show_columns([[label, value]], ROW_WIDTHS, ROW_ALIGNS, ROW_STYLES)
+
+
+
+
+    display.show_columns([["IP:", metrics.ip]], [25, 75], ROW_ALIGNS, ROW_STYLES)
+#     data_row("IP:", metrics.ip)
+
     # Fan row only on boards that actually have a fan (else metrics.fan is None).
     if metrics.fan is not None:
-        data_row("Fan:", metrics.fan)
+        display.show_columns([["Fan:", metrics.fan]], [25, 75], ROW_ALIGNS, ROW_STYLES)
+#         data_row("Fan:", metrics.fan)
 
     display.show()
 
