@@ -19,7 +19,7 @@ temperature, high/low and conditions from :mod:`weather`), picking the due page 
 :func:`oleddisplay.due_page_index`.
 """
 
-__version__ = "1.9.8"
+__version__ = "1.9.9"
 
 import argparse
 import math
@@ -114,14 +114,14 @@ def show_dashboard(display, metrics):
     display.set_font("sans", BODY_SIZE)
 
     display.show_columns([["CPU:", metrics.cpu]], [25, 75], ROW_ALIGNS, ROW_STYLES)
-    display.show_empty_line(2)
+    display.show_empty_line(3)
 
     display.show_columns([["RAM:", metrics.ram]], [25, 75], ROW_ALIGNS, ROW_STYLES)
-    display.show_empty_line(2)
+    display.show_empty_line(3)
 
     # Root disk: the label is "SSD" or "SD" depending on the medium backing "/".
-    display.show_columns([[f"{metrics.disk_label}:", metrics.ssd]], [20, 80], ROW_ALIGNS, ROW_STYLES)
-    display.show_empty_line(2)
+    display.show_columns([[f"{metrics.disk_label}:", metrics.ssd]], [21, 79], ROW_ALIGNS, ROW_STYLES)
+    display.show_empty_line(3)
 
     # NET row: Wi-Fi shows the SSID with a signal-bars icon painted over the reserved right
     # column, a wired uplink shows "LAN", and no uplink shows the "--" placeholder.
@@ -137,10 +137,10 @@ def show_dashboard(display, metrics):
     else:
         display.show_columns([["NET:", MISSING]], ROW_WIDTHS, ROW_ALIGNS, ROW_STYLES)
 
-    display.show_empty_line(2)
+    display.show_empty_line(3)
 
     display.show_columns([["IP:", metrics.ip]], [13, 87], ROW_ALIGNS, ROW_STYLES)
-    display.show_empty_line(2)
+    display.show_empty_line(3)
 
     # Fan row only on boards that actually have a fan (else metrics.fan is None).
     if metrics.fan is not None:
