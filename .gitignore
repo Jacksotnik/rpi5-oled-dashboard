@@ -13,3 +13,7 @@ env/
 .DS_Store
 .idea/
 .vscode/
+
+# Runtime config written by the web panel (per-device state, not source)
+config.json
+config.json.tmp

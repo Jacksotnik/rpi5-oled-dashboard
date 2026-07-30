@@ -6,7 +6,7 @@ After=multi-user.target
 Type=simple
 User=admin
 WorkingDirectory=/home/admin/oled-stats
-ExecStart=/home/admin/oled-stats/venv/bin/python /home/admin/oled-stats/stats_oled.py --interval 5 --rotate 3 --contrast 72 --night-contrast 16 --latitude 45.32673 --longitude 14.44241 --city Rijeka
+ExecStart=/home/admin/oled-stats/venv/bin/python /home/admin/oled-stats/stats_oled.py --interval 5 --rotate 3 --contrast 72 --night-contrast 16 --latitude 45.32673 --longitude 14.44241 --city Rijeka --web-port 8080
 Restart=on-failure
 RestartSec=3
 

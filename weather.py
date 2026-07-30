@@ -17,8 +17,9 @@ import urllib.parse
 import urllib.request
 from collections import namedtuple
 
-# Endpoints — both key-less and free.
+# Endpoints — all key-less and free.
 GEO_IP_URL = "https://ipapi.co/json/"
+GEOCODE_URL = "https://geocoding-api.open-meteo.com/v1/search"
 FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 USER_AGENT = "rpi5-oled-dashboard (+https://github.com/Jacksotnik/rpi5-oled-dashboard)"
 
@@ -35,9 +36,10 @@ RAIN = "rain"
 SNOW = "snow"
 THUNDER = "thunder"
 
-# A resolved place, and the latest reading for it.
+# A resolved place, the latest reading for it, and a geocoding search hit.
 Location = namedtuple("Location", "latitude longitude city")
 WeatherData = namedtuple("WeatherData", "temp high low category is_day city updated")
+GeoResult = namedtuple("GeoResult", "name country admin1 latitude longitude")
 
 
 def category_for_code(code):
@@ -83,6 +85,37 @@ def resolve_location(*, timeout):
         raise ValueError("IP geolocation returned no coordinates")
     city = str(data.get("city") or "--")
     return Location(latitude=latitude, longitude=longitude, city=city)
+
+
+def geocode_city(name, *, timeout, count=5, language="en"):
+    """Look up a place ``name`` via Open-Meteo's geocoding API → a list of :class:`GeoResult`.
+
+    Used by the web panel to turn a typed city name into the latitude/longitude the forecast
+    API needs. Returns ``[]`` for a blank name or no matches; raises on a network/parse error
+    (the caller turns that into an error response).
+    """
+    query = name.strip()
+    if not query:
+        return []
+    url = f"{GEOCODE_URL}?" + urllib.parse.urlencode({
+        "name": query, "count": count, "language": language, "format": "json",
+    })
+    data = _get_json(url, timeout=timeout)
+    results = data.get("results") or []
+    matches = []
+    for item in results:
+        latitude = _as_float(item.get("latitude"))
+        longitude = _as_float(item.get("longitude"))
+        if latitude is None or longitude is None:
+            continue
+        matches.append(GeoResult(
+            name=str(item.get("name") or query),
+            country=str(item.get("country") or ""),
+            admin1=str(item.get("admin1") or ""),
+            latitude=latitude,
+            longitude=longitude,
+        ))
+    return matches
 
 
 def fetch_weather(location, *, timeout, now):
@@ -134,11 +167,26 @@ class WeatherService:
         self._log = log
         self._lock = threading.Lock()
         self._data = None
+        # Set to interrupt the loop's wait so a location change refetches immediately.
+        self._wake = threading.Event()
 
     def latest(self):
         """Return the most recent :class:`WeatherData`, or ``None`` if none yet."""
         with self._lock:
             return self._data
+
+    def set_location(self, location):
+        """Point the service at a new location and refetch right away.
+
+        ``location`` is a fixed :class:`Location`, or ``None`` to switch back to IP
+        geolocation (re-resolved on the next fetch). The cached reading is dropped so the
+        display never shows the old city's data as if it were the new place, and the
+        background thread is woken so the change lands without waiting for the next refresh.
+        """
+        with self._lock:
+            self._location = location
+            self._data = None
+        self._wake.set()
 
     def _store(self, data):
         with self._lock:
@@ -146,25 +194,31 @@ class WeatherService:
 
     def _refresh_once(self):
         """Resolve the location if needed, fetch the weather and cache it."""
-        if self._location is None:
-            self._location = resolve_location(timeout=self._timeout)
-            self._log(f"weather: location resolved to {self._location.city} "
-                      f"({self._location.latitude:.3f}, {self._location.longitude:.3f})")
-        data = fetch_weather(self._location, timeout=self._timeout, now=time.time())
+        with self._lock:
+            location = self._location
+        if location is None:
+            location = resolve_location(timeout=self._timeout)
+            with self._lock:
+                self._location = location
+            self._log(f"weather: location resolved to {location.city} "
+                      f"({location.latitude:.3f}, {location.longitude:.3f})")
+        data = fetch_weather(location, timeout=self._timeout, now=time.time())
         self._store(data)
         self._log(f"weather: updated {data.city} — {data.temp}°C, {data.category}, "
                   f"day={data.is_day}")
 
     def _run(self):
         # A plain service loop: refresh, then wait. One failed cycle must not kill the
-        # thread, so every fetch is guarded and merely logged.
+        # thread, so every fetch is guarded and merely logged. The wait is interruptible
+        # (self._wake) so set_location can force an immediate refresh.
         while True:
             try:
                 self._refresh_once()
             except Exception as error:   # network / parse / anything — stay alive
                 self._log(f"weather: refresh failed: {error}")
             wait = self._refresh_seconds if self.latest() is not None else RETRY_SECONDS
-            time.sleep(wait)
+            self._wake.wait(timeout=wait)
+            self._wake.clear()
 
     def start(self):
         """Launch the refresh loop on a daemon thread and return it."""

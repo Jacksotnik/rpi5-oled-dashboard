@@ -13,6 +13,11 @@ Every 15 seconds the screen alternates with a **weather page** — the current t
 API key), refreshed every 30 minutes on a background thread — for a fixed location set on
 the service command line, or (by default) one resolved automatically by IP.
 
+A small built-in **web config panel** (see below) lets you pick which system-info rows to
+show and reorder them, and set the weather city or turn the weather page off — all live,
+without restarting the service. Those runtime choices live in a per-device `config.json`
+(not in git); the command-line values only seed it on first run.
+
 > Roadmap: system metrics today; hardware sensors and their readouts next.
 
 The panel is driven by the **`oleddisplay`** library, installed into the venv from its own
@@ -24,7 +29,9 @@ repository — no copy is kept here:
 | Path | Purpose |
 |------|---------|
 | `stats_oled.py` | the app — metric collection, screen layout, refresh loop, page rotation |
-| `weather.py` | weather data layer: IP geolocation + Open-Meteo fetch on a background thread |
+| `weather.py` | weather data layer: IP geolocation, geocoding + Open-Meteo fetch on a background thread |
+| `config.py` | runtime config model + thread-safe store (`config.json`), shared by the loop and the panel |
+| `webconfig.py` | the web config panel — a stdlib HTTP server on a daemon thread |
 | `requirements.txt` | venv deps: the `oleddisplay` library (from git) + `psutil` |
 | `oled-stats.service` | systemd unit, installed to `/etc/systemd/system/` on the Pi |
 | `install.sh` | one-command first install on the Pi |
@@ -65,7 +72,7 @@ if it changed, restart the service, and tail the log.
 Type=simple
 User=admin
 WorkingDirectory=/home/admin/oled-stats
-ExecStart=/home/admin/oled-stats/venv/bin/python /home/admin/oled-stats/stats_oled.py --interval 5 --rotate 3 --contrast 72 --night-contrast 16 --latitude 45.32673 --longitude 14.44241 --city Rijeka
+ExecStart=/home/admin/oled-stats/venv/bin/python /home/admin/oled-stats/stats_oled.py --interval 5 --rotate 3 --contrast 72 --night-contrast 16 --latitude 45.32673 --longitude 14.44241 --city Rijeka --web-port 8080
 Restart=on-failure
 RestartSec=3
 ```
@@ -80,6 +87,8 @@ RestartSec=3
   switch cadence (default 15), `--weather-refresh` the fetch period (default 1800 s). A
   fixed `--latitude`/`--longitude` (with optional `--city`) skips IP geolocation — this
   unit pins **Rijeka** (45.327, 14.442).
+- Web panel: on by default on port **8080** (`--web-port`; `--no-web` disables it,
+  `--config` overrides the `config.json` path). See the next section.
 - The screen **blanks on stop/shutdown**: the app catches SIGTERM and clears the panel, so
   the last frame doesn't stay burned on until power-off.
 
@@ -90,6 +99,26 @@ sudo systemctl status oled-stats
 sudo systemctl restart oled-stats
 sudo journalctl -u oled-stats -f
 ```
+
+## Web config panel
+
+The service also serves a small config page — open it from any device on the same network:
+
+```
+http://192.168.10.109:8080      # the Pi's IP, port 8080
+```
+
+From it you can, live (changes show up on the next redraw, no restart):
+
+- **System info** — tick which rows to show and reorder them with the ↑/↓ buttons (the top
+  row is drawn first). The fan row is hidden automatically on a board with no fan.
+- **Weather** — turn the weather page on or off entirely; set the city by name (it is
+  geocoded to coordinates via Open-Meteo), or switch to **Auto (by IP)**.
+
+Edits are saved to `config.json` next to the app (git-ignored per-device state; the
+`--latitude`/`--longitude`/`--city`/`--weather` flags seed it only on first run). A city
+change is pushed straight into the running weather thread and refetched at once. The panel
+is HTTP-only with no authentication — keep it on a trusted LAN.
 
 ## Cautions
 

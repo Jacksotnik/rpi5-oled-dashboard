@@ -19,7 +19,7 @@ temperature, high/low and conditions from :mod:`weather`), picking the due page 
 :func:`oleddisplay.due_page_index`.
 """
 
-__version__ = "1.9.27"
+__version__ = "1.10.0"
 
 import argparse
 import math
@@ -44,7 +44,9 @@ from oleddisplay import (
     format_temperature,
 )
 
+import config
 import weather
+import webconfig
 
 HWMON_ROOT = Path("/sys/class/hwmon")
 MISSING = "--"
@@ -62,14 +64,12 @@ BODY_SIZE = 11     # label (regular) + value (bold) of the data rows
 MARGIN = 1         # left/right margin for the weather page's custom-drawn text
 
 # A data row is two columns: a label pinned left and a value pinned right (percent of the
-# panel width; the value column is wide so long values keep their right edge).
-ROW_WIDTHS = (30, 70)
+# panel width, passed per row; the value column is wide so long values keep their right edge).
 ROW_ALIGNS = ("left", "right")
 ROW_STYLES = ("regular", "bold")   # label regular, value bold — same family and size
 
 # The Wi-Fi NET row keeps a third, empty column on the right so the SSID never runs under
 # the signal-bars icon; WIFI_ICON_BOX below places that icon over it.
-NET_WIDTHS = (26, 56, 18)
 NET_ALIGNS = ("left", "right", "right")
 NET_STYLES = ("regular", "bold", "regular")
 
@@ -99,14 +99,17 @@ NetStatus = namedtuple("NetStatus", "kind ssid signal")   # kind: "wifi" | "wire
 
 # --- Screen drawing ----------------------------------------------------------
 
-def show_dashboard(display, metrics):
+def show_dashboard(display, metrics, layout_rows):
     """Build the status screen from the display's building blocks and show it as one frame.
 
     The header (device name left, uptime right) and each data row are a
     :meth:`~oleddisplay.OledDisplay.show_columns` call — a regular-font label pinned left, a
-    bold value pinned right. The Wi-Fi NET row keeps an empty right column for its
-    signal-bars icon, which :meth:`~oleddisplay.OledDisplay.show_custom` paints on top; a
-    wired or missing uplink is a plain row. Blocks stack top-down in the order added.
+    bold value pinned right. Which data rows appear, and in what order, comes from
+    ``layout_rows`` (the web-editable :class:`config.LayoutRow` list): disabled rows are
+    skipped, and a one-pixel gap separates the rows that remain. The Wi-Fi NET row keeps an
+    empty right column for its signal-bars icon, which
+    :meth:`~oleddisplay.OledDisplay.show_custom` paints on top; a wired or missing uplink is
+    a plain row. Blocks stack top-down in the order added.
     """
     # Header: hostname on the left, uptime on the right, both in the bold title font.
     display.set_font("sans", TITLE_SIZE)
@@ -117,18 +120,62 @@ def show_dashboard(display, metrics):
 
     display.show_line("-------------------------------")
 
-    display.show_columns([["CPU:", metrics.cpu]], [23, 77], ROW_ALIGNS, ROW_STYLES)
-    display.show_empty_line(1)
+    # Draw the enabled rows in the configured order, with a 1 px gap between them. The fan
+    # row is dropped on fanless boards regardless of the config (see _row_available).
+    rows_to_draw = [row.key for row in layout_rows
+                    if row.enabled and _row_available(row.key, metrics)]
+    for index, key in enumerate(rows_to_draw):
+        if index > 0:
+            display.show_empty_line(1)
+        _draw_row(display, key, metrics)
 
-    display.show_columns([["RAM:", metrics.ram]], [23, 77], ROW_ALIGNS, ROW_STYLES)
-    display.show_empty_line(1)
+    display.show()
 
-    # Root disk: the label is "SSD" or "SD" depending on the medium backing "/".
-    display.show_columns([[f"{metrics.disk_label}:", metrics.ssd]], [23, 77], ROW_ALIGNS, ROW_STYLES)
-    display.show_empty_line(1)
+    display.set_font()   # don't leak the dashboard font into the other screens
 
-    # NET row: Wi-Fi shows the SSID with a signal-bars icon painted over the reserved right
-    # column, a wired uplink shows "LAN", and no uplink shows the "--" placeholder.
+
+def _row_available(key, metrics):
+    """Whether a row has data to show right now — the fan row hides on fanless boards."""
+    if key == "fan":
+        return metrics.fan is not None
+    return True
+
+
+def _draw_kv_row(display, label, value, widths):
+    """Draw a plain label/value row: a regular label pinned left, a bold value pinned right."""
+    display.show_columns([[label, value]], widths, ROW_ALIGNS, ROW_STYLES)
+
+
+def _draw_row(display, key, metrics):
+    """Draw one system-info row by its config key (see :data:`config.ROW_DEFS`).
+
+    Most rows are a plain label/value pair; NET is special — it reserves a right column for
+    the Wi-Fi signal icon and paints it on top. An unknown key (a config newer than this
+    code) is skipped quietly.
+    """
+    if key == "cpu":
+        _draw_kv_row(display, "CPU:", metrics.cpu, [23, 77])
+    elif key == "ram":
+        _draw_kv_row(display, "RAM:", metrics.ram, [23, 77])
+    elif key == "disk":
+        # Root disk: the label is "SSD" or "SD" depending on the medium backing "/".
+        _draw_kv_row(display, f"{metrics.disk_label}:", metrics.ssd, [23, 77])
+    elif key == "net":
+        _draw_net_row(display, metrics)
+    elif key == "ip":
+        _draw_kv_row(display, "IP:", metrics.ip, [12, 88])
+    elif key == "fan":
+        _draw_kv_row(display, "FAN:", metrics.fan, [23, 77])
+    else:
+        pass
+
+
+def _draw_net_row(display, metrics):
+    """Draw the NET row: Wi-Fi (SSID + signal icon), a wired "LAN", or the "--" placeholder.
+
+    Wi-Fi shows the SSID with a signal-bars icon painted over the reserved right column; a
+    wired uplink shows "LAN" and no uplink shows "--".
+    """
     if metrics.net_kind == "wifi":
         display.show_columns([["NET:", metrics.ssid, ""]], [23, 57, 20], NET_ALIGNS, NET_STYLES)
 
@@ -141,22 +188,9 @@ def show_dashboard(display, metrics):
                                                  baseline=net_row_bottom - WIFI_ICON_LIFT,
                                                  signal=metrics.wifi_signal))
     elif metrics.net_kind == "wired":
-        display.show_columns([["NET:", "LAN"]], [23, 77], ROW_ALIGNS, ROW_STYLES)
+        _draw_kv_row(display, "NET:", "LAN", [23, 77])
     else:
-        display.show_columns([["NET:", MISSING]], [23, 77], ROW_ALIGNS, ROW_STYLES)
-
-    display.show_empty_line(1)
-
-    display.show_columns([["IP:", metrics.ip]], [12, 88], ROW_ALIGNS, ROW_STYLES)
-    display.show_empty_line(1)
-
-    # Fan row only on boards that actually have a fan (else metrics.fan is None).
-    if metrics.fan is not None:
-        display.show_columns([["FAN:", metrics.fan]], [23, 77], ROW_ALIGNS, ROW_STYLES)
-
-    display.show()
-
-    display.set_font()   # don't leak the dashboard font into the other screens
+        _draw_kv_row(display, "NET:", MISSING, [23, 77])
 
 
 def signal_to_bars(signal):
@@ -688,12 +722,13 @@ def _raise_keyboard_interrupt(signum, frame):
     raise KeyboardInterrupt
 
 
-def run(display, args, hostname, sensors, weather_service):
+def run(display, args, hostname, sensors, weather_service, config_store):
     """Draw a single frame (``--once``) or loop, alternating pages, until interrupted."""
     if args.once:
         # A short pause so the first cpu_percent reading is meaningful.
         time.sleep(0.7)
-        show_dashboard(display, collect_metrics(hostname, sensors))
+        show_dashboard(display, collect_metrics(hostname, sensors),
+                       config_store.snapshot().rows)
         return
 
     applied_contrast = args.contrast   # already applied by OledDisplay.open()
@@ -708,27 +743,33 @@ def run(display, args, hostname, sensors, weather_service):
                 display.set_contrast(wanted)
                 applied_contrast = wanted
 
-            _show_current_page(display, args, hostname, sensors, weather_service)
+            _show_current_page(display, args, hostname, sensors, weather_service, config_store)
             time.sleep(args.interval)
     except KeyboardInterrupt:
         pass
 
 
-def _show_current_page(display, args, hostname, sensors, weather_service):
+def _show_current_page(display, args, hostname, sensors, weather_service, config_store):
     """Draw whichever page is due now — the dashboard, or the weather page on its turn.
 
     Pages alternate on an ``args.page_seconds`` timer. The weather page joins the rotation
-    only when a weather service is running; otherwise the dashboard is always shown.
+    only when a weather service is running; otherwise the dashboard is always shown. The
+    dashboard reads its row layout from the shared config each frame, so a web-panel edit
+    shows up on the next redraw without a restart.
     """
+    config = config_store.snapshot()
+
+    # The weather page joins the rotation only when the service is running AND the config
+    # keeps it enabled — the web panel can turn it off entirely, leaving the dashboard alone.
     on_weather = False
-    if weather_service is not None:
+    if weather_service is not None and config.weather.enabled:
         page = due_page_index(time.monotonic(), seconds=args.page_seconds, count=2)
         on_weather = page == 1
 
     if on_weather:
         show_weather(display, weather_service.latest())
     else:
-        show_dashboard(display, collect_metrics(hostname, sensors))
+        show_dashboard(display, collect_metrics(hostname, sensors), config.rows)
 
 
 def parse_args():
@@ -769,6 +810,17 @@ def parse_args():
                         help="fixed longitude (with --latitude) instead of IP geolocation")
     parser.add_argument("--city", type=str, default=None,
                         help="place name to show (default: from geolocation)")
+
+    # Runtime config file + web panel. The --city/--latitude/--longitude and --weather flags
+    # above only seed the config on first run; after that config.json (edited via the panel)
+    # wins.
+    parser.add_argument("--config", type=str,
+                        default=str(Path(__file__).resolve().parent / "config.json"),
+                        help="path to the runtime config JSON (default: next to this script)")
+    parser.add_argument("--web", action=argparse.BooleanOptionalAction, default=True,
+                        help="serve the web config panel (default on; --no-web to disable)")
+    parser.add_argument("--web-port", type=int, default=webconfig.DEFAULT_PORT,
+                        help=f"web panel TCP port (default {webconfig.DEFAULT_PORT})")
     return parser.parse_args()
 
 
@@ -782,6 +834,8 @@ def main():
     # frame is not left burning in while the Pi is off but still on mains.
     signal.signal(signal.SIGTERM, _raise_keyboard_interrupt)
 
+    config_store = _load_config(args)
+
     hostname = socket.gethostname()
     sensors = Sensors(
         cpu_temp=find_hwmon_input("cpu_thermal", "temp1_input"),
@@ -792,28 +846,53 @@ def main():
     # Prime psutil.cpu_percent, otherwise the first reading returns 0.
     psutil.cpu_percent(interval=None)
 
-    weather_service = _start_weather(args)
+    weather_service = _start_weather(args, config_store.snapshot().weather)
+    if args.web and not args.once:
+        # A failure to bind the panel (e.g. the port is taken) must not stop the display —
+        # log it and carry on showing stats.
+        try:
+            _start_web(args, config_store, weather_service)
+        except OSError as error:
+            print(f"webconfig: could not start on port {args.web_port}: {error}", flush=True)
 
     # In --once mode keep the frame on screen; in the loop, clear it on exit
     # (Ctrl-C or SIGTERM).
     with OledDisplay.open(bus=args.bus, address=args.address, rotate=args.rotate,
                           contrast=args.contrast, clear_on_close=not args.once) as display:
-        run(display, args, hostname, sensors, weather_service)
+        run(display, args, hostname, sensors, weather_service, config_store)
 
 
-def _start_weather(args):
+def _load_config(args):
+    """Load the runtime config (seeded from the CLI args on first run) into a store."""
+    seed = config.default_seed(
+        city=args.city,
+        latitude=args.latitude,
+        longitude=args.longitude,
+        weather_enabled=args.weather,
+    )
+    store = config.ConfigStore(args.config, seed=seed,
+                               log=lambda message: print(message, flush=True))
+    store.load_or_seed()
+    return store
+
+
+def _start_weather(args, weather_conf):
     """Build and start the weather service, or return ``None`` when weather is off.
 
-    A fixed ``--latitude``/``--longitude`` pair skips IP geolocation; otherwise the service
-    resolves the location by IP on its own thread. Weather is never fetched in ``--once``.
+    The location comes from the runtime config: a manual place with coordinates skips IP
+    geolocation, anything else resolves by IP on the service's own thread. The service runs
+    whenever ``--weather`` is on even if the config currently hides the page — so re-enabling
+    it from the panel shows fresh data at once. Weather is never fetched in ``--once``.
     """
     if not args.weather or args.once:
         return None
 
     location = None
-    if args.latitude is not None and args.longitude is not None:
-        location = weather.Location(latitude=args.latitude, longitude=args.longitude,
-                                    city=args.city or "--")
+    if (weather_conf.mode == config.WEATHER_MANUAL
+            and weather_conf.latitude is not None and weather_conf.longitude is not None):
+        location = weather.Location(latitude=weather_conf.latitude,
+                                    longitude=weather_conf.longitude,
+                                    city=weather_conf.city or "--")
 
     service = weather.WeatherService(
         refresh_seconds=args.weather_refresh,
@@ -823,6 +902,18 @@ def _start_weather(args):
     )
     service.start()
     return service
+
+
+def _start_web(args, config_store, weather_service):
+    """Start the web config panel on its daemon thread."""
+    server = webconfig.WebConfigServer(
+        config_store=config_store,
+        weather_service=weather_service,
+        port=args.web_port,
+        timeout=args.weather_timeout,
+        log=lambda message: print(message, flush=True),
+    )
+    server.start()
 
 
 if __name__ == "__main__":
