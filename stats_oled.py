@@ -7,9 +7,10 @@ temperature, labelled ``SSD`` or ``SD`` after the actual medium), the network up
 (Wi-Fi SSID with a signal-bars icon, or ``LAN`` on a wired link), IP address and, when a
 fan is present, its speed (current rpm — the row is hidden on fanless boards).
 Each data row justifies a regular-font label to the left edge and a bold-font value (same
-size) to the right edge; the screen is composed from the :mod:`oleddisplay.layout`
-primitives — an :class:`~oleddisplay.layout.Rows` writer for the header and plain rows, and
-:meth:`~oleddisplay.layout.Rows.custom` for the Wi-Fi row's SSID-plus-icon.
+size) to the right edge; the screen is built from the display's building blocks — one
+:meth:`~oleddisplay.OledDisplay.show_columns` call per row — with the Wi-Fi row keeping an
+empty right column for a signal-bars icon that :meth:`~oleddisplay.OledDisplay.show_custom`
+paints on top.
 
 All low-level screen handling lives in the :mod:`oleddisplay` package; what remains here
 is metric collection, the row layout, the refresh loop, and a night-time dimming window
@@ -18,7 +19,7 @@ temperature, high/low and conditions from :mod:`weather`), picking the due page 
 :func:`oleddisplay.due_page_index`.
 """
 
-__version__ = "1.6.0"
+__version__ = "1.7.0"
 
 import argparse
 import math
@@ -41,7 +42,6 @@ from oleddisplay import (
     format_duration,
     format_percent,
     format_temperature,
-    layout,
 )
 
 import weather
@@ -51,28 +51,39 @@ MISSING = "--"
 WHITE = "white"
 BLACK = "black"
 
-# --- Layout (in pixels) ------------------------------------------------------
-# The header shows the device name (left) and uptime (right); the data rows below
-# justify a regular label to the left edge and a bold value to the right edge.
-# Temperatures are shown as "47°" (degree sign only) to stay compact.
+# --- Dashboard layout --------------------------------------------------------
+# The screen is stacked from the display's building blocks in order: the header row
+# (device name left, uptime right) and each data row are one show_columns() call — a
+# regular-font label pinned left, a bold value pinned right — and the Wi-Fi NET row adds
+# its signal-bars icon on top with show_custom(). Blocks stack top-down in the order added;
+# nothing is stretched to fill the panel. Temperatures are shown as "47°" to stay compact.
 TITLE_SIZE = 13    # header font (device name + uptime)
-BODY_SIZE = 11     # both label (regular) and value (bold) of the data rows
-MARGIN = 1         # left/right screen margin (label/value ink is pinned to it)
-LABEL_GAP = 4      # minimum gap between a label and its right-aligned value
-TITLE_TOP = 1      # y of the header row
-ROWS_TOP = 21      # y of the first data row (small gap below the header)
-ROW_STEP = 18      # vertical step between data rows (up to six rows fill the panel)
+BODY_SIZE = 11     # label (regular) + value (bold) of the data rows
+MARGIN = 1         # left/right margin for the weather page's custom-drawn text
+
+# A data row is two columns: a label pinned left and a value pinned right (percent of the
+# panel width; the value column is wide so long values keep their right edge).
+ROW_WIDTHS = (30, 70)
+ROW_ALIGNS = ("left", "right")
+ROW_STYLES = ("regular", "bold")   # label regular, value bold — same family and size
+
+# The Wi-Fi NET row keeps a third, empty column on the right so the SSID never runs under
+# the signal-bars icon; WIFI_ICON_BOX below places that icon over it.
+NET_WIDTHS = (26, 56, 18)
+NET_ALIGNS = ("left", "right", "right")
+NET_STYLES = ("regular", "bold", "regular")
 
 # --- Wi-Fi signal icon (ascending bars) --------------------------------------
-# A tiny signal meter drawn at the right end of the NET row when it shows Wi-Fi: WIFI_BARS
+# A tiny signal meter painted with show_custom() on the right of the NET row: WIFI_BARS
 # bars of growing height; the ones covered by the current signal are solid, the rest
-# hollow outlines.
+# hollow outlines. WIFI_ICON_BOX is its absolute (x0, y0, x1, y1) region — tune it to sit
+# on the NET row, the same way the weather icon uses WX_ICON_BOX.
 WIFI_BARS = 4          # number of bars
 WIFI_BAR_WIDTH = 3     # px width of each bar (>=3 so a hollow bar shows an interior gap)
 WIFI_BAR_GAP = 1       # px gap between bars
 WIFI_BAR_MIN_H = 3     # height of the shortest (leftmost) bar
 WIFI_BAR_STEP = 2      # each bar is this many px taller than the one before it
-WIFI_ICON_GAP = 3      # gap between the icon and the SSID name to its left
+WIFI_ICON_BOX = (109, 61, 124, 70)   # (x0, y0, x1, y1); only the right edge and bottom matter
 
 Metrics = namedtuple(
     "Metrics",
@@ -84,38 +95,39 @@ NetStatus = namedtuple("NetStatus", "kind ssid signal")   # kind: "wifi" | "wire
 
 # --- Screen drawing ----------------------------------------------------------
 
-def draw_dashboard(display, draw, metrics):
-    """Draw the header (name left, uptime right) and the data rows onto ``draw``.
+def show_dashboard(display, metrics):
+    """Build the status screen from the display's building blocks and show it as one frame.
 
-    Composed from the library's layout primitives: an :class:`oleddisplay.layout.Rows`
-    writer lays out the header and the plain label/value rows, and the Wi-Fi NET row uses
-    :meth:`Rows.custom` to fit the SSID beside a signal-bars icon.
+    The header (device name left, uptime right) and each data row are a
+    :meth:`~oleddisplay.OledDisplay.show_columns` call — a regular-font label pinned left, a
+    bold value pinned right. The Wi-Fi NET row keeps an empty right column for its
+    signal-bars icon, which :meth:`~oleddisplay.OledDisplay.show_custom` paints on top; a
+    wired or missing uplink is a plain row. Blocks stack top-down in the order added.
     """
-    title_font = display.font(TITLE_SIZE, bold=True)
-    label_font = display.font(BODY_SIZE)
-    value_font = display.font(BODY_SIZE, bold=True)
+    # Header: hostname on the left, uptime on the right, both in the bold title font.
+    display.set_font("sans", TITLE_SIZE)
+    display.show_columns([[metrics.hostname, metrics.uptime]],
+                         ROW_WIDTHS, ROW_ALIGNS, ("bold", "bold"))
 
-    rows = layout.Rows(draw, width=display.width, margin=MARGIN, top=TITLE_TOP,
-                       label_gap=LABEL_GAP)
-    # Header: the hostname on the left, the uptime on the right, both in the title font.
-    rows.row(metrics.hostname, metrics.uptime, label_font=title_font,
-             value_font=title_font, advance=ROWS_TOP - TITLE_TOP)
+    # Data rows: a regular label pinned left, a bold value pinned right.
+    display.set_font("sans", BODY_SIZE)
 
     def data_row(label, value):
-        rows.row(label, value, label_font=label_font, value_font=value_font,
-                 advance=ROW_STEP)
+        display.show_columns([[label, value]], ROW_WIDTHS, ROW_ALIGNS, ROW_STYLES)
 
     data_row("CPU:", metrics.cpu)
     data_row("RAM:", metrics.ram)
     # Root disk: the label is "SSD" or "SD" depending on the medium backing "/".
     data_row(f"{metrics.disk_label}:", metrics.ssd)
-    # NET row: Wi-Fi shows "<SSID> <signal-bars>", a wired uplink shows "LAN", and no
-    # uplink shows the "--" placeholder.
+    # NET row: Wi-Fi shows the SSID with a signal-bars icon painted over the reserved right
+    # column, a wired uplink shows "LAN", and no uplink shows the "--" placeholder.
     if metrics.net_kind == "wifi":
-        rows.custom(
-            lambda d, y, right_edge: _draw_net_wifi(d, y, right_edge, metrics,
-                                                    label_font, value_font),
-            advance=ROW_STEP)
+        display.show_columns([["NET:", metrics.ssid, ""]],
+                             NET_WIDTHS, NET_ALIGNS, NET_STYLES)
+        display.show_custom(
+            lambda draw: _draw_wifi_bars(draw, right=WIFI_ICON_BOX[2],
+                                         baseline=WIFI_ICON_BOX[3],
+                                         signal=metrics.wifi_signal))
     elif metrics.net_kind == "wired":
         data_row("NET:", "LAN")
     else:
@@ -125,29 +137,9 @@ def draw_dashboard(display, draw, metrics):
     if metrics.fan is not None:
         data_row("Fan:", metrics.fan)
 
+    display.show()
 
-def _draw_net_wifi(draw, y, right_edge, metrics, label_font, value_font):
-    """Paint the Wi-Fi NET row: "NET:" left, the SSID right-aligned, signal bars far right.
-
-    Used as a :meth:`oleddisplay.layout.Rows.custom` painter, so it lines up with the plain
-    rows around it while adding the icon the generic row layout can't.
-    """
-    icon_left = _draw_wifi_bars(draw, right=right_edge, baseline=y + BODY_SIZE,
-                                signal=metrics.wifi_signal)
-    name_right = icon_left - WIFI_ICON_GAP
-    _, label_right = layout.draw_text(draw, MARGIN, y, "NET:", label_font,
-                                      align="left", flush=True)
-    cell_width = name_right - (label_right + LABEL_GAP)
-    fitted = layout.fit_text(value_font, metrics.ssid, cell_width)
-    layout.draw_text(draw, name_right, y, fitted, value_font, align="right", flush=True)
-
-
-def show_dashboard(display, metrics):
-    """Render one full frame of the status screen to the panel."""
-    def paint(draw):
-        draw_dashboard(display, draw, metrics)
-
-    display.render(paint)
+    display.set_font()   # don't leak the dashboard font into the other screens
 
 
 def signal_to_bars(signal):
@@ -166,7 +158,7 @@ def _draw_wifi_bars(draw, *, right, baseline, signal):
     """Draw the Wi-Fi icon with its right edge at ``right`` and bottom at ``baseline``.
 
     Bars ascend left→right; the first ``signal_to_bars(signal)`` are solid, the rest are
-    hollow. Returns the icon's left x so the caller can right-align the name beside it.
+    hollow. Returns the icon's left x (unused now the SSID column reserves its own space).
     """
     filled = signal_to_bars(signal)
     icon_width = WIFI_BARS * WIFI_BAR_WIDTH + (WIFI_BARS - 1) * WIFI_BAR_GAP
@@ -199,6 +191,9 @@ WX_ICON_BOX = (82, 6, 124, 46)   # (x0, y0, x1, y1) box for the condition icon
 WX_BODY_TOP = 41     # y where the block-built body starts, under the temperature / icon
 WX_HILO_GAP = 2      # extra blank px after the high/low line (17 px line + 2 = 19 px step)
 WX_ROW_GAP = 1       # extra blank px after the time / date rows (17 px line + 1 = 18 px step)
+
+TIME_SIZE = 15
+CITY_GAP = 5
 
 
 def _round_temp(value):
@@ -244,17 +239,25 @@ def show_weather(display, data):
 
     display.show_custom(paint_header)
     display.show_empty_line(WX_BODY_TOP)
+
     display.set_font("sans", WX_HILO_SIZE)
     display.show_line(f"{_round_temp(data.high)}° / {_round_temp(data.low)}°")
+
     display.show_empty_line(WX_HILO_GAP)
-    display.set_font("sans", WX_ROW_SIZE, "bold")
+
+    display.set_font("sans", TIME_SIZE, "bold")
     display.show_line(time.strftime("%H:%M", now))
+
     display.show_empty_line(WX_ROW_GAP)
+
     display.set_font("sans", WX_ROW_SIZE)
     display.show_line(time.strftime("%a, %d %b", now))
-    display.show_empty_line(WX_ROW_GAP)
+
+    display.show_empty_line(CITY_GAP)
+
     display.set_font("sans", WX_ROW_SIZE, "bold")
-    display.show_line(data.city)
+    display.show_line(data.city, "right")
+
     display.show()
 
     display.set_font()   # don't leak the weather font into the other screens
