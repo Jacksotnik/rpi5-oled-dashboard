@@ -20,7 +20,7 @@ temperature, humidity and pressure from :mod:`local_meteo`'s AHT20+BMP280), pick
 page with :func:`oleddisplay.due_page_index`.
 """
 
-__version__ = "1.13.0"
+__version__ = "1.14.0"
 
 import argparse
 import math
@@ -47,6 +47,7 @@ from oleddisplay import (
 
 import config
 import local_meteo
+import mqtt_publisher
 import weather
 import webconfig
 
@@ -116,7 +117,7 @@ def show_dashboard(display, metrics, layout_rows):
     """
     # Header: hostname on the left, uptime on the right, both in the bold title font.
     display.set_font("sans", TITLE_SIZE)
-    display.show_columns([[metrics.hostname, metrics.uptime]], [60, 50], ROW_ALIGNS, ("bold", "regular"))
+    display.show_columns([[metrics.hostname, metrics.uptime]], [50, 50], ROW_ALIGNS, ("bold", "regular"))
 
     # Data rows: a regular label pinned left, a bold value pinned right.
     display.set_font("sans", BODY_SIZE)
@@ -1022,7 +1023,11 @@ def main():
     psutil.cpu_percent(interval=None)
 
     weather_service = _start_weather(args, config_store.snapshot().weather)
-    meteo_service = _start_meteo(args)
+    # The MQTT publisher is wired as the meteo service's reading hook, so it must exist before the
+    # meteo service starts — each reading is then published the moment it is taken.
+    publisher = _start_mqtt(args, config_store, hostname)
+    on_reading = publisher.publish_reading if publisher is not None else None
+    meteo_service = _start_meteo(args, on_reading=on_reading)
     services = Services(weather=weather_service, meteo=meteo_service)
     if args.web and not args.once:
         # A failure to bind the panel (e.g. the port is taken) must not stop the display —
@@ -1082,14 +1087,15 @@ def _start_weather(args, weather_conf):
     return service
 
 
-def _start_meteo(args):
+def _start_meteo(args, *, on_reading=None):
     """Build and start the indoor sensor service, or return ``None`` when meteo is off / --once.
 
     Reads the AHT20+BMP280 on the same I²C bus as the display every ``--meteo-refresh`` seconds
     on its own thread; the display loop reads the cached snapshot via ``latest()`` and never
     blocks on a sensor measurement. Runs whenever ``--meteo`` is on even if the config currently
     hides the page, so re-enabling it from the panel shows a fresh reading at once. Sensors are
-    never read in ``--once``.
+    never read in ``--once``. ``on_reading`` (the MQTT publisher's hook) is called with each fresh
+    reading so it is published the instant it is measured.
     """
     if not args.meteo or args.once:
         return None
@@ -1098,10 +1104,31 @@ def _start_meteo(args):
         refresh_seconds=args.meteo_refresh,
         bus_number=args.bus,
         history_path=args.pressure_history,
+        on_reading=on_reading,
         log=lambda message: print(message, flush=True),
     )
     service.start()
     return service
+
+
+def _start_mqtt(args, config_store, hostname):
+    """Build the MQTT publisher, or return ``None`` when it can't run (``--once`` / no paho).
+
+    The publisher is created regardless of the ``mqtt.enabled`` toggle so the web-panel checkbox
+    can turn publishing on and off live: it connects and publishes only while enabled, and reads
+    that flag fresh on every reading. Broker host + credentials live in config.json's ``mqtt``
+    block. No publishing happens in ``--once`` (no meteo readings are taken then).
+    """
+    if args.once:
+        return None
+    if not mqtt_publisher.PAHO_AVAILABLE:
+        print("mqtt: paho-mqtt not installed — MQTT publishing unavailable", flush=True)
+        return None
+    return mqtt_publisher.MqttPublisher(
+        config_store=config_store,
+        hostname=hostname,
+        log=lambda message: print(message, flush=True),
+    )
 
 
 def _start_web(args, config_store, weather_service):

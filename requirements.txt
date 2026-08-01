@@ -3,3 +3,5 @@ rpi5-sh1107-oled-128x128 @ git+https://github.com/Jacksotnik/rpi5-sh1107-oled-12
 # Extras used by stats_oled.py / local_meteo.py:
 psutil>=7.0.0
 smbus2>=0.4.0
+# Home Assistant MQTT publisher (mqtt_publisher.py); v2 for the CallbackAPIVersion API:
+paho-mqtt>=2.0

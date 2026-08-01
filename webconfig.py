@@ -8,7 +8,7 @@ display loop inside the one dashboard process. It serves a single self-contained
 
     GET  /                — the config page
     GET  /api/config      — the current config (with row labels for the UI)
-    POST /api/config      — validate and persist edits (rows + weather + meteo)
+    POST /api/config      — validate and persist edits (rows + weather + meteo + the MQTT toggle)
     GET  /api/geocode?q=  — Open-Meteo geocoding matches for a typed city
 
 Edits are applied through the shared :class:`config.ConfigStore` (the render loop reads it
@@ -65,6 +65,13 @@ def _config_for_ui(cfg):
             "temp_offset_min": config.METEO_TEMP_OFFSET_MIN,
             "temp_offset_max": config.METEO_TEMP_OFFSET_MAX,
             "temp_offset_step": config.METEO_TEMP_OFFSET_STEP,
+        },
+        # Only the on/off toggle is exposed — never the broker host/credentials (a secret the
+        # browser must not see). ``configured`` lets the page hint when the toggle would do nothing
+        # because config.json has no broker address yet.
+        "mqtt": {
+            "enabled": cfg.mqtt.enabled,
+            "configured": bool(cfg.mqtt.host),
         },
     }
 
@@ -325,6 +332,13 @@ PAGE_HTML = """<!doctype html>
     <p class="hint">Added to the displayed room temperature — the sensor sits close to the panel and board, so it reads a little high.</p>
   </section>
 
+  <section>
+    <h2>Home Assistant</h2>
+    <label class="check"><input type="checkbox" id="mq-enabled"> Publish sensor readings over MQTT</label>
+    <p class="hint">Sends room temperature, humidity and pressure to Home Assistant via the MQTT broker. The broker address and credentials are set in <code>config.json</code> on the device.</p>
+    <p id="mq-warn" class="hint" style="display:none; color:#e3b591;">No broker configured in <code>config.json</code> — the toggle has no effect until it is set.</p>
+  </section>
+
   <button id="save" class="save" type="button">Save</button>
   <p id="status"></p>
 
@@ -332,7 +346,7 @@ PAGE_HTML = """<!doctype html>
 "use strict";
 
 // Live UI state, seeded from GET /api/config and posted back on Save.
-const state = { rows: [], weather: {}, meteo: {} };
+const state = { rows: [], weather: {}, meteo: {}, mqtt: {} };
 
 function setStatus(text, kind) {
   const el = document.getElementById("status");
@@ -346,9 +360,11 @@ async function loadConfig() {
   state.rows = data.layout.rows;
   state.weather = data.weather;
   state.meteo = data.meteo;
+  state.mqtt = data.mqtt;
   renderRows();
   renderWeather();
   renderMeteo();
+  renderMqtt();
 }
 
 // --- System info rows ------------------------------------------------------
@@ -499,6 +515,14 @@ function formatOffset(value) {
   return prefix + value.toFixed(1) + " °C";
 }
 
+// --- Home Assistant (MQTT) -------------------------------------------------
+
+function renderMqtt() {
+  document.getElementById("mq-enabled").checked = !!state.mqtt.enabled;
+  // Hint when the toggle can't do anything because no broker is set in config.json.
+  document.getElementById("mq-warn").style.display = state.mqtt.configured ? "none" : "block";
+}
+
 // --- Save ------------------------------------------------------------------
 
 function collectPayload() {
@@ -518,6 +542,11 @@ function collectPayload() {
       enabled: document.getElementById("mt-enabled").checked,
       temp_offset: parseFloat(document.getElementById("mt-offset").value),
     },
+    // Only the toggle — the broker host/credentials stay server-side in config.json and are
+    // preserved across saves by ConfigStore.save_from_raw.
+    mqtt: {
+      enabled: document.getElementById("mq-enabled").checked,
+    },
   };
 }
 
@@ -536,9 +565,11 @@ async function save() {
     state.rows = data.layout.rows;
     state.weather = data.weather;
     state.meteo = data.meteo;
+    state.mqtt = data.mqtt;
     renderRows();
     renderWeather();
     renderMeteo();
+    renderMqtt();
     setStatus("Saved. The screen updates on its next redraw.", "ok");
   } catch (error) {
     setStatus("Save failed: " + error, "err");

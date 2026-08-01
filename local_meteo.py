@@ -355,13 +355,20 @@ class MeteoService:
     loop calls :meth:`latest` (cheap, lock-guarded) and never blocks on a measurement; ``latest``
     is ``None`` until the first read. When ``history_path`` is given, each reading's pressure is
     also fed to a file-backed :class:`PressureHistory` for the 12 h trend graph.
+
+    ``on_reading``, if given, is called with the fresh :class:`MeteoReading` right after each read
+    — the hook the MQTT publisher uses to push the value the moment it is measured, so there is
+    exactly one publish per read with no second timer to drift against. A listener failure is
+    logged and swallowed so it can never take the sensor thread down.
     """
 
     def __init__(self, *, refresh_seconds, bus_number=1, history_path=None,
                  history_window_seconds=DEFAULT_HISTORY_WINDOW_SECONDS,
-                 history_sample_seconds=DEFAULT_HISTORY_SAMPLE_SECONDS, log=print):
+                 history_sample_seconds=DEFAULT_HISTORY_SAMPLE_SECONDS,
+                 on_reading=None, log=print):
         self._refresh_seconds = refresh_seconds
         self._bus_number = bus_number
+        self._on_reading = on_reading
         self._log = log
         self._lock = threading.Lock()
         self._data = None
@@ -399,6 +406,13 @@ class MeteoService:
             f"meteo: temp={_fmt(reading.temp_c)}°C hum={_fmt(reading.humidity)}% "
             f"press={_fmt(reading.pressure_hpa)}hPa{suffix}"
         )
+        # Hand the fresh reading to any listener (the MQTT publisher) so it goes out the instant it
+        # is measured. Guarded on its own so a listener error can't be mistaken for a sensor fault.
+        if self._on_reading is not None:
+            try:
+                self._on_reading(reading)
+            except Exception as error:
+                self._log(f"meteo: reading listener failed: {error}")
 
     def _run(self):
         # A plain service loop: read, then wait. One failed cycle must not kill the thread, so

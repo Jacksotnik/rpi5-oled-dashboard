@@ -31,8 +31,10 @@ repository — no copy is kept here:
 | `stats_oled.py` | the app — metric collection, screen layout, refresh loop, page rotation |
 | `weather.py` | weather data layer: IP geolocation, geocoding + Open-Meteo fetch on a background thread |
 | `config.py` | runtime config model + thread-safe store (`config.json`), shared by the loop and the panel |
+| `local_meteo.py` | indoor AHT20 + BMP280 sensor service (I²C) + file-backed pressure history |
+| `mqtt_publisher.py` | publishes the indoor readings to MQTT for Home Assistant (HA MQTT Discovery) |
 | `webconfig.py` | the web config panel — a stdlib HTTP server on a daemon thread |
-| `requirements.txt` | venv deps: the `oleddisplay` library (from git) + `psutil` |
+| `requirements.txt` | venv deps: the `oleddisplay` library (from git) + `psutil`, `smbus2`, `paho-mqtt` |
 | `oled-stats.service` | systemd unit, installed to `/etc/systemd/system/` on the Pi |
 | `install.sh` | one-command first install on the Pi |
 | `update.sh` | one-command update / deploy on the Pi |
@@ -120,11 +122,47 @@ From it you can, live (changes show up on the next redraw, no restart):
   amount (range **−5…+5 °C**, step **0.5**, default **0**). The offset applies only to the
   shown temperature — humidity and pressure, and the raw value in the service log, are
   untouched.
+- **Home Assistant** — turn MQTT publishing of the indoor readings on or off (see the next
+  section). The broker address and credentials live in `config.json` on the device and are
+  **not** editable from the panel — only this toggle is.
 
 Edits are saved to `config.json` next to the app (git-ignored per-device state; the
 `--latitude`/`--longitude`/`--city`/`--weather` flags seed it only on first run). A city
 change is pushed straight into the running weather thread and refetched at once. The panel
 is HTTP-only with no authentication — keep it on a trusted LAN.
+
+## Home Assistant (MQTT)
+
+The indoor AHT20 + BMP280 readings can be published to an MQTT broker so **Home Assistant**
+picks them up as native sensors. It uses HA's **MQTT Discovery**: on connect the service
+publishes a retained discovery config per measurement, so HA auto-creates *Temperature*,
+*Humidity* and *Pressure* entities grouped under one device (**OLED meteo**) — no YAML on the
+HA side. The live values then go as one retained JSON state message.
+
+Publishing is **event-driven**: each reading is sent the instant it is taken (once per
+`--meteo-refresh`, 30 s by default), reusing the same read the dashboard already does — so it
+adds **no extra I²C traffic**. The published room temperature carries the same temperature
+compensation offset as the screen; humidity and pressure are sent as measured. A Last-Will
+message flips the device **offline** in HA if the service dies (or the toggle is turned off),
+so a dead sensor is flagged rather than left showing a stale value.
+
+Turn it on or off **live** from the web panel's **Home Assistant** checkbox. The broker
+connection lives in the `mqtt` block of `config.json` on the device — never sent to the
+browser (only the on/off toggle is):
+
+```json
+"mqtt": {
+  "enabled": true,
+  "host": "127.0.0.1",
+  "port": 1883,
+  "username": "mqtt",
+  "password": "…"
+}
+```
+
+Needs a running MQTT broker (e.g. Mosquitto) reachable at `host:port`; standing one up is out
+of scope here. The client is `paho-mqtt` (in `requirements.txt`) — if it is missing the
+publisher logs a warning and the dashboard runs unaffected.
 
 ## Cautions
 

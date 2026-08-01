@@ -20,8 +20,14 @@ The JSON shape (``config.json``)::
       "layout": { "rows": [ {"key": "cpu", "enabled": true}, ... ] },
       "weather": { "mode": "manual", "city": "Rijeka",
                    "latitude": 45.32673, "longitude": 14.44241 },
-      "meteo": { "enabled": true, "temp_offset": 0.0 }
+      "meteo": { "enabled": true, "temp_offset": 0.0 },
+      "mqtt": { "enabled": true, "host": "127.0.0.1", "port": 1883,
+                "username": "mqtt", "password": "…" }
     }
+
+The ``mqtt`` block feeds the Home Assistant publisher (:mod:`mqtt_publisher`); it holds a broker
+password, so — unlike the other blocks — it is never exposed by the web panel nor editable there,
+and a web-panel save preserves it untouched (see :meth:`ConfigStore.save_from_raw`).
 """
 
 import json
@@ -69,7 +75,10 @@ METEO_TEMP_OFFSET_DEFAULT = 0.0
 LayoutRow = namedtuple("LayoutRow", "key enabled")
 WeatherConf = namedtuple("WeatherConf", "enabled mode city latitude longitude")
 MeteoConf = namedtuple("MeteoConf", "enabled temp_offset")   # the local AHT20+BMP280 sensor page
-Config = namedtuple("Config", "rows weather meteo")   # rows: list[LayoutRow]
+# The Home Assistant MQTT publisher's broker connection (see mqtt_publisher). ``password`` is a
+# secret, so this block stays out of the web panel entirely.
+MqttConf = namedtuple("MqttConf", "enabled host port username password")
+Config = namedtuple("Config", "rows weather meteo mqtt")   # rows: list[LayoutRow]
 
 
 # --- Defensive readers for loosely-typed (JSON) data ------------------------
@@ -93,6 +102,22 @@ def _as_str(value, default):
     if isinstance(value, str) and value.strip():
         return value.strip()
     return default
+
+
+def _as_secret(value, default):
+    """Like :func:`_as_str` but keeps the value verbatim (no stripping) — for passwords."""
+    if isinstance(value, str) and value != "":
+        return value
+    return default
+
+
+def _as_port(value, default):
+    """Coerce a JSON value to a TCP port (1..65535), or ``default`` for anything out of range."""
+    number = _as_float_or_none(value)
+    if number is None:
+        return default
+    port = int(number)
+    return port if 1 <= port <= 65535 else default
 
 
 def _as_float_or_none(value):
@@ -179,6 +204,21 @@ def _parse_meteo(raw_meteo, *, seed_meteo):
     return MeteoConf(enabled=enabled, temp_offset=temp_offset)
 
 
+def _parse_mqtt(raw_mqtt, *, seed_mqtt):
+    """Validate the mqtt block from raw JSON into a :class:`MqttConf`.
+
+    ``enabled`` gates the whole Home Assistant publisher. ``host``/``port`` point at the broker;
+    ``username``/``password`` authenticate to it (an empty username means an anonymous broker).
+    Anything missing or malformed falls back to the seed's value.
+    """
+    enabled = _as_bool(_get(raw_mqtt, "enabled", seed_mqtt.enabled), seed_mqtt.enabled)
+    host = _as_str(_get(raw_mqtt, "host", ""), seed_mqtt.host)
+    port = _as_port(_get(raw_mqtt, "port", None), seed_mqtt.port)
+    username = _as_str(_get(raw_mqtt, "username", ""), seed_mqtt.username)
+    password = _as_secret(_get(raw_mqtt, "password", ""), seed_mqtt.password)
+    return MqttConf(enabled=enabled, host=host, port=port, username=username, password=password)
+
+
 def parse_config(raw, *, seed):
     """Parse a loosely-typed config dict into a validated :class:`Config`.
 
@@ -189,7 +229,8 @@ def parse_config(raw, *, seed):
     rows = _parse_rows(_get(layout, "rows", None), seed_rows=seed.rows)
     weather = _parse_weather(_get(raw, "weather", {}), seed_weather=seed.weather)
     meteo = _parse_meteo(_get(raw, "meteo", {}), seed_meteo=seed.meteo)
-    return Config(rows=rows, weather=weather, meteo=meteo)
+    mqtt = _parse_mqtt(_get(raw, "mqtt", {}), seed_mqtt=seed.mqtt)
+    return Config(rows=rows, weather=weather, meteo=meteo, mqtt=mqtt)
 
 
 def config_to_dict(config):
@@ -209,6 +250,13 @@ def config_to_dict(config):
         "meteo": {
             "enabled": config.meteo.enabled,
             "temp_offset": config.meteo.temp_offset,
+        },
+        "mqtt": {
+            "enabled": config.mqtt.enabled,
+            "host": config.mqtt.host,
+            "port": config.mqtt.port,
+            "username": config.mqtt.username,
+            "password": config.mqtt.password,
         },
     }
 
@@ -231,7 +279,11 @@ def default_seed(*, city, latitude, longitude, weather_enabled, meteo_enabled):
         longitude=longitude,
     )
     meteo = MeteoConf(enabled=meteo_enabled, temp_offset=METEO_TEMP_OFFSET_DEFAULT)
-    return Config(rows=rows, weather=weather, meteo=meteo)
+    # MQTT is off by default and has no credentials until the config.json ``mqtt`` block is filled
+    # in on the device (it is deliberately not a CLI flag, to keep the broker password off the
+    # process command line — it lives only in the gitignored config.json).
+    mqtt = MqttConf(enabled=False, host="127.0.0.1", port=1883, username="", password="")
+    return Config(rows=rows, weather=weather, meteo=meteo, mqtt=mqtt)
 
 
 # --- Thread-safe store ------------------------------------------------------
@@ -279,9 +331,14 @@ class ConfigStore:
         """Validate raw (web-posted) config, persist it, store it, and return the result.
 
         Validation reuses :func:`parse_config` against the seed, so bad input degrades to
-        safe values instead of being rejected.
+        safe values instead of being rejected. The web panel never sends the ``mqtt`` block, so
+        we fall its values back to the *current* config rather than the credential-less seed —
+        otherwise a panel save would wipe the broker password out of config.json.
         """
-        config = parse_config(raw, seed=self._seed)
+        with self._lock:
+            current = self._config
+        seed = self._seed._replace(mqtt=current.mqtt)
+        config = parse_config(raw, seed=seed)
         self._write(config)
         with self._lock:
             self._config = config
