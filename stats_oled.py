@@ -20,7 +20,7 @@ temperature, humidity and pressure from :mod:`local_meteo`'s AHT20+BMP280), pick
 page with :func:`oleddisplay.due_page_index`.
 """
 
-__version__ = "1.14.0"
+__version__ = "1.14.1"
 
 import argparse
 import math

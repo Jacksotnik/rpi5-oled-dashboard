@@ -90,17 +90,20 @@ def _discovery_payload(measurement, device):
 def _state_payload(reading, temp_offset):
     """Build the state dict from a :class:`local_meteo.MeteoReading`, applying the temp offset.
 
-    The room temperature carries the same ``temp_offset`` compensation as the OLED page. A sensor
-    that failed this cycle (its field is ``None``) is omitted, so HA keeps its last value instead
-    of flipping to *unknown* on a momentary glitch. Returns ``{}`` when nothing is readable.
+    Values are quantised to smooth sensor jitter: the room temperature carries the same
+    ``temp_offset`` compensation as the OLED page and is then snapped to the nearest **0.5 °C**;
+    humidity and pressure are published as whole units (0.1 hPa is below meaningful barometer
+    accuracy — just noise here). A sensor that failed this cycle (its field is ``None``) is
+    omitted, so HA keeps its last value instead of flipping to *unknown* on a momentary glitch.
+    Returns ``{}`` when nothing is readable.
     """
     state = {}
     if reading.temp_c is not None:
-        state["temperature"] = round(reading.temp_c + temp_offset, 1)
+        state["temperature"] = round((reading.temp_c + temp_offset) * 2) / 2   # nearest 0.5 °C
     if reading.humidity is not None:
         state["humidity"] = round(reading.humidity)          # whole percent
     if reading.pressure_hpa is not None:
-        state["pressure"] = round(reading.pressure_hpa, 1)
+        state["pressure"] = round(reading.pressure_hpa)      # whole hPa
     return state
 
 
