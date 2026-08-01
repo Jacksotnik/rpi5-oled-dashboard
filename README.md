@@ -114,6 +114,12 @@ From it you can, live (changes show up on the next redraw, no restart):
   row is drawn first). The fan row is hidden automatically on a board with no fan.
 - **Weather** — turn the weather page on or off entirely; set the city by name (it is
   geocoded to coordinates via Open-Meteo), or switch to **Auto (by IP)**.
+- **Local meteo** — turn the indoor AHT20 + BMP280 sensor page on or off, and set a
+  **temperature compensation** offset. The sensor sits close to the OLED panel and the board,
+  so it reads a little high; the picker nudges the *displayed* room temperature by a fixed
+  amount (range **−5…+5 °C**, step **0.5**, default **0**). The offset applies only to the
+  shown temperature — humidity and pressure, and the raw value in the service log, are
+  untouched.
 
 Edits are saved to `config.json` next to the app (git-ignored per-device state; the
 `--latitude`/`--longitude`/`--city`/`--weather` flags seed it only on first run). A city

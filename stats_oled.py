@@ -20,7 +20,7 @@ temperature, humidity and pressure from :mod:`local_meteo`'s AHT20+BMP280), pick
 page with :func:`oleddisplay.due_page_index`.
 """
 
-__version__ = "1.12.0"
+__version__ = "1.13.0"
 
 import argparse
 import math
@@ -585,18 +585,21 @@ def _draw_pressure_graph(display, draw, box, points, now):
     draw.ellipse((last_x - 1, last_y - 1, last_x + 1, last_y + 1), fill=WHITE)
 
 
-def show_meteo(display, reading, pressure_points=()):
+def show_meteo(display, reading, pressure_points=(), temp_offset=0.0):
     """Show the indoor meteo page: big temperature + house icon, rows, and a 12 h pressure trend.
 
     ``reading`` is the latest :class:`local_meteo.MeteoReading` (``None`` before the first sensor
     read); any single field may be ``None`` if that sensor failed, rendering as ``--``.
     ``pressure_points`` is the file-backed history (``[epoch, hPa]``, oldest first) drawn as the
     bottom trend graph — it survives a reboot, so the graph can show even before the first live
-    read. The screen is stacked from the building blocks (custom header + graph, plain rows) and
-    ``display.show()`` puts it on the panel as one frame.
+    read. ``temp_offset`` (°C) is added to the sensor's room temperature before it is drawn, to
+    compensate for the sensor's heat pickup next to the panel/board; humidity and pressure are
+    shown as measured. The screen is stacked from the building blocks (custom header + graph,
+    plain rows) and ``display.show()`` puts it on the panel as one frame.
     """
     # Tolerate a missing reading: the header/rows show "--" while the graph still draws history.
-    temp_c = reading.temp_c if reading is not None else None
+    raw_temp_c = reading.temp_c if reading is not None else None
+    temp_c = raw_temp_c + temp_offset if raw_temp_c is not None else None
     humidity = reading.humidity if reading is not None else None
     pressure_hpa = reading.pressure_hpa if reading is not None else None
 
@@ -927,7 +930,8 @@ def _show_current_page(display, args, hostname, sensors, services, config_store)
     if page == "weather":
         show_weather(display, services.weather.latest())
     elif page == "meteo":
-        show_meteo(display, services.meteo.latest(), services.meteo.pressure_history())
+        show_meteo(display, services.meteo.latest(), services.meteo.pressure_history(),
+                   temp_offset=config.meteo.temp_offset)
     else:
         show_dashboard(display, collect_metrics(hostname, sensors), config.rows)
 

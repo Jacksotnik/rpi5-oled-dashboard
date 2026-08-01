@@ -20,7 +20,7 @@ The JSON shape (``config.json``)::
       "layout": { "rows": [ {"key": "cpu", "enabled": true}, ... ] },
       "weather": { "mode": "manual", "city": "Rijeka",
                    "latitude": 45.32673, "longitude": 14.44241 },
-      "meteo": { "enabled": true }
+      "meteo": { "enabled": true, "temp_offset": 0.0 }
     }
 """
 
@@ -54,12 +54,21 @@ WEATHER_MANUAL = "manual"   # a fixed, geocoded place (city + latitude/longitude
 WEATHER_AUTO = "auto"       # resolve the location by IP geolocation, as before
 WEATHER_MODES = (WEATHER_MANUAL, WEATHER_AUTO)
 
+# Local meteo temperature compensation. The AHT20 sits close to the OLED panel and the RPi
+# board, so it reads a little high; the user nudges the *displayed* room temperature by a fixed
+# offset (°C). The web picker offers this range in these steps; the validator clamps + snaps to
+# match, so a hand-edited config can't push the offset out of bounds.
+METEO_TEMP_OFFSET_MIN = -5.0
+METEO_TEMP_OFFSET_MAX = 5.0
+METEO_TEMP_OFFSET_STEP = 0.5
+METEO_TEMP_OFFSET_DEFAULT = 0.0
+
 # --- Typed config -----------------------------------------------------------
 # Loosely-typed JSON is parsed into these at the boundary; the rest of the app works with
 # the typed objects and never reaches back into raw dicts.
 LayoutRow = namedtuple("LayoutRow", "key enabled")
 WeatherConf = namedtuple("WeatherConf", "enabled mode city latitude longitude")
-MeteoConf = namedtuple("MeteoConf", "enabled")   # the local AHT20+BMP280 sensor page
+MeteoConf = namedtuple("MeteoConf", "enabled temp_offset")   # the local AHT20+BMP280 sensor page
 Config = namedtuple("Config", "rows weather meteo")   # rows: list[LayoutRow]
 
 
@@ -92,6 +101,21 @@ def _as_float_or_none(value):
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _as_offset(value, default):
+    """Coerce a JSON value to a temperature-compensation offset (°C).
+
+    Clamps to ``[METEO_TEMP_OFFSET_MIN, METEO_TEMP_OFFSET_MAX]`` and snaps to
+    ``METEO_TEMP_OFFSET_STEP`` so a hand-edited or stale config stays within what the picker can
+    produce; anything missing/garbage falls back to ``default``.
+    """
+    number = _as_float_or_none(value)
+    if number is None:
+        return default
+    clamped = max(METEO_TEMP_OFFSET_MIN, min(METEO_TEMP_OFFSET_MAX, number))
+    steps = round(clamped / METEO_TEMP_OFFSET_STEP)
+    return steps * METEO_TEMP_OFFSET_STEP
 
 
 # --- Parsing / serialization ------------------------------------------------
@@ -145,11 +169,14 @@ def _parse_weather(raw_weather, *, seed_weather):
 def _parse_meteo(raw_meteo, *, seed_meteo):
     """Validate the meteo block from raw JSON into a :class:`MeteoConf`.
 
-    ``enabled`` toggles the whole indoor sensor page in the rotation; anything odd falls back
-    to the seed's value.
+    ``enabled`` toggles the whole indoor sensor page in the rotation; ``temp_offset`` shifts the
+    displayed room temperature (°C) to compensate for the sensor's heat pickup near the board.
+    Anything odd falls back to the seed's value.
     """
     enabled = _as_bool(_get(raw_meteo, "enabled", seed_meteo.enabled), seed_meteo.enabled)
-    return MeteoConf(enabled=enabled)
+    temp_offset = _as_offset(_get(raw_meteo, "temp_offset", seed_meteo.temp_offset),
+                             seed_meteo.temp_offset)
+    return MeteoConf(enabled=enabled, temp_offset=temp_offset)
 
 
 def parse_config(raw, *, seed):
@@ -181,6 +208,7 @@ def config_to_dict(config):
         },
         "meteo": {
             "enabled": config.meteo.enabled,
+            "temp_offset": config.meteo.temp_offset,
         },
     }
 
@@ -202,7 +230,7 @@ def default_seed(*, city, latitude, longitude, weather_enabled, meteo_enabled):
         latitude=latitude,
         longitude=longitude,
     )
-    meteo = MeteoConf(enabled=meteo_enabled)
+    meteo = MeteoConf(enabled=meteo_enabled, temp_offset=METEO_TEMP_OFFSET_DEFAULT)
     return Config(rows=rows, weather=weather, meteo=meteo)
 
 

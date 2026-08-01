@@ -59,6 +59,12 @@ def _config_for_ui(cfg):
         },
         "meteo": {
             "enabled": cfg.meteo.enabled,
+            "temp_offset": cfg.meteo.temp_offset,
+            # The picker bounds/step travel with the config so the page builds the options from a
+            # single source of truth (config.py) rather than hard-coding the range in the HTML.
+            "temp_offset_min": config.METEO_TEMP_OFFSET_MIN,
+            "temp_offset_max": config.METEO_TEMP_OFFSET_MAX,
+            "temp_offset_step": config.METEO_TEMP_OFFSET_STEP,
         },
     }
 
@@ -255,10 +261,11 @@ PAGE_HTML = """<!doctype html>
   label.check { display: flex; align-items: center; gap: 10px; margin: 10px 0; }
   label.check input { width: 20px; height: 20px; }
   .field { display: flex; gap: 8px; margin: 12px 0 8px; }
-  .field input[type=text] {
+  .field input[type=text], .field select {
     flex: 1; font: inherit; color: #e6e9ef; background: #20252e;
     border: 1px solid #3a424f; border-radius: 8px; padding: 8px 10px;
   }
+  .field-label { display: block; font-size: 14px; color: #aab2c0; margin: 14px 0 0; }
   .results li { padding: 8px 10px; border: 1px solid #272c35; border-radius: 8px; margin-bottom: 6px; cursor: pointer; }
   .results li:hover { background: #262c36; }
   #wx-current { color: #9fd0a0; font-size: 13px; }
@@ -311,6 +318,11 @@ PAGE_HTML = """<!doctype html>
     <h2>Local meteo</h2>
     <label class="check"><input type="checkbox" id="mt-enabled"> Show the indoor sensor screen</label>
     <p class="hint">Room temperature, humidity and pressure from the AHT20 + BMP280 sensor.</p>
+    <label class="field-label" for="mt-offset">Temperature compensation</label>
+    <div class="field">
+      <select id="mt-offset"></select>
+    </div>
+    <p class="hint">Added to the displayed room temperature — the sensor sits close to the panel and board, so it reads a little high.</p>
   </section>
 
   <button id="save" class="save" type="button">Save</button>
@@ -460,6 +472,31 @@ function buildResult(match) {
 
 function renderMeteo() {
   document.getElementById("mt-enabled").checked = !!state.meteo.enabled;
+  renderOffsetOptions();
+}
+
+// Build the compensation picker from the range/step the server sent, selecting the saved offset.
+function renderOffsetOptions() {
+  const select = document.getElementById("mt-offset");
+  const min = state.meteo.temp_offset_min;
+  const max = state.meteo.temp_offset_max;
+  const step = state.meteo.temp_offset_step > 0 ? state.meteo.temp_offset_step : 0.5;
+  const current = state.meteo.temp_offset || 0;
+  select.textContent = "";
+  for (let value = min; value <= max + 1e-9; value += step) {
+    const rounded = Math.round(value / step) * step;
+    const option = document.createElement("option");
+    option.value = String(rounded);
+    option.textContent = formatOffset(rounded);
+    if (Math.abs(rounded - current) < 1e-9) option.selected = true;
+    select.appendChild(option);
+  }
+}
+
+function formatOffset(value) {
+  if (value === 0) return "0.0 °C (no change)";
+  const prefix = value > 0 ? "+" : "";
+  return prefix + value.toFixed(1) + " °C";
 }
 
 // --- Save ------------------------------------------------------------------
@@ -479,6 +516,7 @@ function collectPayload() {
     },
     meteo: {
       enabled: document.getElementById("mt-enabled").checked,
+      temp_offset: parseFloat(document.getElementById("mt-offset").value),
     },
   };
 }
