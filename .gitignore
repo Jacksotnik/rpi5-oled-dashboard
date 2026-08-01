@@ -17,3 +17,7 @@ env/
 # Runtime config written by the web panel (per-device state, not source)
 config.json
 config.json.tmp
+
+# Pressure trend history (per-device runtime state, not source)
+pressure_history.json
+pressure_history.json.tmp

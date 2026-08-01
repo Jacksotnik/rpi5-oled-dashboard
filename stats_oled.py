@@ -20,7 +20,7 @@ temperature, humidity and pressure from :mod:`local_meteo`'s AHT20+BMP280), pick
 page with :func:`oleddisplay.due_page_index`.
 """
 
-__version__ = "1.11.0"
+__version__ = "1.12.0"
 
 import argparse
 import math
@@ -485,6 +485,10 @@ MT_BODY_TOP = 44     # y where the humidity/pressure rows start, under the heade
 MT_ROW_SIZE = 12     # font of the humidity / pressure rows (12px fits bold "1009 hPa" on 126px)
 MT_ROW_GAP = 6       # blank px between the two rows
 MT_ROW_WIDTHS = [46, 54]   # label / value split; the value is bold (wider) so it gets more
+# 12 h barometric-pressure trend filling the free space at the bottom of the page.
+MT_GRAPH_BOX = (1, 88, 126, 124)   # (x0, y0, x1, y1) plot area
+MT_GRAPH_LABEL_SIZE = 9            # tiny max / min hPa labels forming the y-scale
+MT_GRAPH_WINDOW = 12 * 3600        # seconds of history the graph spans
 
 
 def _format_temp1(value):
@@ -525,11 +529,11 @@ def _draw_house(draw, box):
     draw.rectangle((door_cx - door_w / 2, y1 - h * 0.34, door_cx + door_w / 2, y1), fill=WHITE)
 
 
-def _draw_meteo_header(display, draw, reading):
+def _draw_meteo_header(display, draw, temp_c):
     """The custom top of the meteo page: the big room temperature and the house icon."""
     temp_font = display.font(MT_TEMP_SIZE, bold=True)
     unit_font = display.font(MT_UNIT_SIZE, bold=True)
-    temp_text = f"{_format_temp1(reading.temp_c)}°"
+    temp_text = f"{_format_temp1(temp_c)}°"
     draw.text((MARGIN, MT_TEMP_TOP), temp_text, font=temp_font, fill=WHITE)
     unit_x = MARGIN + temp_font.getlength(temp_text) + 1
     draw.text((unit_x, MT_TEMP_TOP + MT_TEMP_SIZE - MT_UNIT_SIZE - 3),
@@ -537,33 +541,82 @@ def _draw_meteo_header(display, draw, reading):
     _draw_house(draw, MT_ICON_BOX)
 
 
-def show_meteo(display, reading):
-    """Show the indoor meteo page: big temperature + house icon, then humidity and pressure.
+def _draw_pressure_graph(display, draw, box, points, now):
+    """Draw a 12 h barometric-pressure trend inside ``box`` from ``points`` (``[epoch, hPa]``).
 
-    ``reading`` is the latest :class:`local_meteo.MeteoReading` (``None`` before the first
-    sensor read). Any single field may be ``None`` if that sensor failed; it renders as ``--``.
-    The screen is built from the display's building blocks — the custom header, then the two
-    rows stacked under it — and ``display.show()`` puts it on the panel as one frame.
+    A left gutter carries tiny max/min hPa labels (the y-scale); the rest is the trend line over
+    a bottom axis, with the latest sample marked by a dot. Until there are at least two samples
+    in the window it just shows a "collecting" hint.
     """
-    if reading is None:
-        def paint(draw):
-            font = display.font(14)
-            draw.text((MARGIN, display.height // 2 - 8), "Sensor…", font=font, fill=WHITE)
-        display.render(paint)
+    x0, y0, x1, y1 = box
+    label_font = display.font(MT_GRAPH_LABEL_SIZE)
+    series = [(timestamp, pressure) for timestamp, pressure in points
+              if timestamp >= now - MT_GRAPH_WINDOW]
+    if len(series) < 2:
+        draw.text((x0, (y0 + y1) // 2 - MT_GRAPH_LABEL_SIZE // 2),
+                  "collecting 12h trend…", font=label_font, fill=WHITE)
         return
 
+    values = [pressure for _, pressure in series]
+    pmin, pmax = min(values), max(values)
+
+    # y-scale: max label at the top, min at the bottom of a left gutter; the plot fills the rest.
+    max_label, min_label = f"{pmax:.0f}", f"{pmin:.0f}"
+    gutter = int(max(label_font.getlength(max_label), label_font.getlength(min_label))) + 3
+    draw.text((x0, y0), max_label, font=label_font, fill=WHITE)
+    draw.text((x0, y1 - MT_GRAPH_LABEL_SIZE), min_label, font=label_font, fill=WHITE)
+
+    plot_left = x0 + gutter
+    draw.line((plot_left, y1, x1, y1), fill=WHITE)   # bottom axis
+
+    span = pmax - pmin
+    if span < 0.5:
+        span = 0.5   # a nearly-flat trend: keep the line off the very edges
+    plot_height = (y1 - y0) - 1   # 1 px headroom at the top
+
+    def to_xy(timestamp, pressure):
+        x = plot_left + (timestamp - (now - MT_GRAPH_WINDOW)) / MT_GRAPH_WINDOW * (x1 - plot_left)
+        y = y1 - (pressure - pmin) / span * plot_height
+        return (x, y)
+
+    line = [to_xy(timestamp, pressure) for timestamp, pressure in series]
+    draw.line(line, fill=WHITE)
+    last_x, last_y = line[-1]
+    draw.ellipse((last_x - 1, last_y - 1, last_x + 1, last_y + 1), fill=WHITE)
+
+
+def show_meteo(display, reading, pressure_points=()):
+    """Show the indoor meteo page: big temperature + house icon, rows, and a 12 h pressure trend.
+
+    ``reading`` is the latest :class:`local_meteo.MeteoReading` (``None`` before the first sensor
+    read); any single field may be ``None`` if that sensor failed, rendering as ``--``.
+    ``pressure_points`` is the file-backed history (``[epoch, hPa]``, oldest first) drawn as the
+    bottom trend graph — it survives a reboot, so the graph can show even before the first live
+    read. The screen is stacked from the building blocks (custom header + graph, plain rows) and
+    ``display.show()`` puts it on the panel as one frame.
+    """
+    # Tolerate a missing reading: the header/rows show "--" while the graph still draws history.
+    temp_c = reading.temp_c if reading is not None else None
+    humidity = reading.humidity if reading is not None else None
+    pressure_hpa = reading.pressure_hpa if reading is not None else None
+
     def paint_header(draw):
-        _draw_meteo_header(display, draw, reading)
+        _draw_meteo_header(display, draw, temp_c)
 
     display.show_custom(paint_header)
     display.show_empty_line(MT_BODY_TOP)
 
     display.set_font("sans", MT_ROW_SIZE)
-    display.show_columns([["Humidity", _format_humidity(reading.humidity)]],
+    display.show_columns([["Humidity", _format_humidity(humidity)]],
                          MT_ROW_WIDTHS, ROW_ALIGNS, ROW_STYLES)
     display.show_empty_line(MT_ROW_GAP)
-    display.show_columns([["Pressure", _format_pressure(reading.pressure_hpa)]],
+    display.show_columns([["Pressure", _format_pressure(pressure_hpa)]],
                          MT_ROW_WIDTHS, ROW_ALIGNS, ROW_STYLES)
+
+    def paint_graph(draw):
+        _draw_pressure_graph(display, draw, MT_GRAPH_BOX, pressure_points, time.time())
+
+    display.show_custom(paint_graph)
 
     display.show()
 
@@ -874,7 +927,7 @@ def _show_current_page(display, args, hostname, sensors, services, config_store)
     if page == "weather":
         show_weather(display, services.weather.latest())
     elif page == "meteo":
-        show_meteo(display, services.meteo.latest())
+        show_meteo(display, services.meteo.latest(), services.meteo.pressure_history())
     else:
         show_dashboard(display, collect_metrics(hostname, sensors), config.rows)
 
@@ -924,6 +977,10 @@ def parse_args():
                              "(default on; --no-meteo to disable)")
     parser.add_argument("--meteo-refresh", type=float, default=30.0,
                         help="how often to read the indoor sensors, in seconds (default 30)")
+    parser.add_argument("--pressure-history", type=str,
+                        default=str(Path(__file__).resolve().parent / "pressure_history.json"),
+                        help="file for the 12 h pressure trend, kept across reboots "
+                             "(default: next to this script)")
 
     # Runtime config file + web panel. The --city/--latitude/--longitude and --weather flags
     # above only seed the config on first run; after that config.json (edited via the panel)
@@ -1036,6 +1093,7 @@ def _start_meteo(args):
     service = local_meteo.MeteoService(
         refresh_seconds=args.meteo_refresh,
         bus_number=args.bus,
+        history_path=args.pressure_history,
         log=lambda message: print(message, flush=True),
     )
     service.start()

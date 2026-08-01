@@ -12,9 +12,12 @@ raw register access — no heavyweight sensor stack. Both sensors sit on ``/dev/
 fixed addresses next to the SH1107 panel (``0x3c``); the three addresses don't collide.
 """
 
+import json
+import os
 import threading
 import time
 from collections import namedtuple
+from pathlib import Path
 
 from smbus2 import SMBus, i2c_msg
 
@@ -250,27 +253,135 @@ class MeteoSensor:
         )
 
 
+# --- Pressure history (file-backed 12 h trend) ---------------------------------------------
+DEFAULT_HISTORY_WINDOW_SECONDS = 12 * 3600   # keep the last 12 hours
+DEFAULT_HISTORY_SAMPLE_SECONDS = 300         # record at most one sample every 5 minutes
+
+
+def _as_list(value):
+    """Return ``value`` if it is a list, else an empty list (defensive JSON read)."""
+    return value if isinstance(value, list) else []
+
+
+def _as_history_point(item):
+    """Coerce one loosely-typed history entry to ``[epoch:int, hPa:float]`` or ``None``."""
+    if not isinstance(item, (list, tuple)) or len(item) != 2:
+        return None
+    try:
+        return [int(item[0]), float(item[1])]
+    except (TypeError, ValueError):
+        return None
+
+
+class PressureHistory:
+    """A rolling, file-backed history of barometric pressure for the trend graph.
+
+    Keeps one ``[epoch, hPa]`` sample at most every ``sample_seconds`` over the last
+    ``window_seconds``, persisted to a JSON file so a reboot doesn't lose the recent trend.
+    Thread-safe: the meteo service records from its own thread while the display loop reads the
+    series to draw it. A read/write failure is logged, not raised — the trend is best-effort and
+    must never take the readings down.
+    """
+
+    def __init__(self, path, *, window_seconds=DEFAULT_HISTORY_WINDOW_SECONDS,
+                 sample_seconds=DEFAULT_HISTORY_SAMPLE_SECONDS, log=print):
+        self._path = Path(path)
+        self._window_seconds = window_seconds
+        self._sample_seconds = sample_seconds
+        self._log = log
+        self._lock = threading.Lock()
+        self._points = self._load()   # list of [epoch, hPa], oldest first
+
+    def points(self):
+        """Return a copy of the retained ``[epoch, hPa]`` samples (oldest first)."""
+        with self._lock:
+            return list(self._points)
+
+    def record(self, pressure, now):
+        """Append ``pressure`` (hPa) sampled at ``now`` if due, prune old samples and persist.
+
+        Self-limits to one sample per ``sample_seconds``, so it is safe to call on every sensor
+        read. A ``None`` pressure (sensor failure) is skipped.
+        """
+        if pressure is None:
+            return
+        with self._lock:
+            if self._points and now - self._points[-1][0] < self._sample_seconds:
+                return
+            self._points.append([int(now), float(pressure)])
+            self._prune(now)
+            snapshot = list(self._points)
+        self._write(snapshot)
+
+    def _prune(self, now):
+        cutoff = now - self._window_seconds
+        self._points = [point for point in self._points if point[0] >= cutoff]
+
+    def _load(self):
+        """Read the history file, keeping only well-formed samples within the window."""
+        if not self._path.exists():
+            return []
+        try:
+            raw = json.loads(self._path.read_text())
+        except (OSError, ValueError) as error:
+            self._log(f"meteo: could not read pressure history ({error}); starting empty")
+            return []
+        cutoff = time.time() - self._window_seconds
+        raw_points = _as_list(raw.get("points")) if isinstance(raw, dict) else []
+        points = []
+        for item in raw_points:
+            point = _as_history_point(item)
+            if point is not None and point[0] >= cutoff:
+                points.append(point)
+        points.sort(key=lambda point: point[0])
+        return points
+
+    def _write(self, points):
+        """Atomically persist ``points`` (temp file in the same dir + replace)."""
+        try:
+            payload = json.dumps({"points": points})
+            tmp = self._path.with_name(self._path.name + ".tmp")
+            tmp.write_text(payload)
+            os.replace(tmp, self._path)
+        except OSError as error:
+            self._log(f"meteo: could not write pressure history: {error}")
+
+
 class MeteoService:
     """Keeps one cached :class:`MeteoReading` fresh on a background thread.
 
     Opens its own handle on the I²C bus (the kernel serialises transactions, so sharing the bus
     with the display is safe) and re-reads both sensors every ``refresh_seconds``. The display
     loop calls :meth:`latest` (cheap, lock-guarded) and never blocks on a measurement; ``latest``
-    is ``None`` until the first read.
+    is ``None`` until the first read. When ``history_path`` is given, each reading's pressure is
+    also fed to a file-backed :class:`PressureHistory` for the 12 h trend graph.
     """
 
-    def __init__(self, *, refresh_seconds, bus_number=1, log=print):
+    def __init__(self, *, refresh_seconds, bus_number=1, history_path=None,
+                 history_window_seconds=DEFAULT_HISTORY_WINDOW_SECONDS,
+                 history_sample_seconds=DEFAULT_HISTORY_SAMPLE_SECONDS, log=print):
         self._refresh_seconds = refresh_seconds
         self._bus_number = bus_number
         self._log = log
         self._lock = threading.Lock()
         self._data = None
         self._sensor = None
+        self._history = None
+        if history_path is not None:
+            self._history = PressureHistory(
+                history_path, window_seconds=history_window_seconds,
+                sample_seconds=history_sample_seconds, log=log)
 
     def latest(self):
         """Return the most recent :class:`MeteoReading`, or ``None`` if none yet."""
         with self._lock:
             return self._data
+
+    def pressure_history(self):
+        """Return the retained pressure samples (``[epoch, hPa]``, oldest first) for the graph."""
+        if self._history is None:
+            return []
+        return self._history.points()
 
     def _store(self, data):
         with self._lock:
@@ -281,6 +392,8 @@ class MeteoService:
             self._sensor = MeteoSensor(SMBus(self._bus_number), log=self._log)
         reading = self._sensor.read()
         self._store(reading)
+        if self._history is not None:
+            self._history.record(reading.pressure_hpa, reading.updated)
         suffix = f" [{reading.error}]" if reading.error else ""
         self._log(
             f"meteo: temp={_fmt(reading.temp_c)}°C hum={_fmt(reading.humidity)}% "
