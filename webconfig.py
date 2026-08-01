@@ -8,7 +8,7 @@ display loop inside the one dashboard process. It serves a single self-contained
 
     GET  /                — the config page
     GET  /api/config      — the current config (with row labels for the UI)
-    POST /api/config      — validate and persist edits (rows + weather)
+    POST /api/config      — validate and persist edits (rows + weather + meteo)
     GET  /api/geocode?q=  — Open-Meteo geocoding matches for a typed city
 
 Edits are applied through the shared :class:`config.ConfigStore` (the render loop reads it
@@ -56,6 +56,9 @@ def _config_for_ui(cfg):
             "city": cfg.weather.city,
             "latitude": cfg.weather.latitude,
             "longitude": cfg.weather.longitude,
+        },
+        "meteo": {
+            "enabled": cfg.meteo.enabled,
         },
     }
 
@@ -220,11 +223,13 @@ PAGE_HTML = """<!doctype html>
 <style>
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
   body {
     margin: 0; padding: 24px 16px 48px;
     font: 16px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
     background: #14171c; color: #e6e9ef;
     max-width: 640px; margin-inline: auto;
+    overflow-wrap: anywhere;
   }
   h1 { font-size: 22px; margin: 0 0 4px; }
   h2 { font-size: 16px; margin: 0 0 12px; color: #aab2c0; text-transform: uppercase; letter-spacing: .04em; }
@@ -262,6 +267,20 @@ PAGE_HTML = """<!doctype html>
   #status { min-height: 20px; font-size: 14px; margin: 8px 0 0; }
   #status.ok { color: #9fd0a0; }
   #status.err { color: #e39191; }
+
+  /* Phone-sized screens: tighter margins, bigger touch targets, no sideways scroll. */
+  @media (max-width: 480px) {
+    body { padding: 16px 12px 32px; }
+    h1 { font-size: 20px; }
+    section { padding: 14px; margin: 14px 0; border-radius: 10px; }
+    .rows li { padding: 8px; gap: 8px; }
+    .rows input[type=checkbox], label.check input { width: 24px; height: 24px; }
+    .arrows button { padding: 8px 12px; font-size: 17px; }
+    button { padding: 9px 12px; }
+    .field { flex-wrap: wrap; }
+    .field input[type=text] { min-width: 0; }
+    .save { padding: 14px; }
+  }
 </style>
 </head>
 <body>
@@ -288,6 +307,12 @@ PAGE_HTML = """<!doctype html>
     </div>
   </section>
 
+  <section>
+    <h2>Local meteo</h2>
+    <label class="check"><input type="checkbox" id="mt-enabled"> Show the indoor sensor screen</label>
+    <p class="hint">Room temperature, humidity and pressure from the AHT20 + BMP280 sensor.</p>
+  </section>
+
   <button id="save" class="save" type="button">Save</button>
   <p id="status"></p>
 
@@ -295,7 +320,7 @@ PAGE_HTML = """<!doctype html>
 "use strict";
 
 // Live UI state, seeded from GET /api/config and posted back on Save.
-const state = { rows: [], weather: {} };
+const state = { rows: [], weather: {}, meteo: {} };
 
 function setStatus(text, kind) {
   const el = document.getElementById("status");
@@ -308,8 +333,10 @@ async function loadConfig() {
   const data = await res.json();
   state.rows = data.layout.rows;
   state.weather = data.weather;
+  state.meteo = data.meteo;
   renderRows();
   renderWeather();
+  renderMeteo();
 }
 
 // --- System info rows ------------------------------------------------------
@@ -429,6 +456,12 @@ function buildResult(match) {
   return li;
 }
 
+// --- Local meteo -----------------------------------------------------------
+
+function renderMeteo() {
+  document.getElementById("mt-enabled").checked = !!state.meteo.enabled;
+}
+
 // --- Save ------------------------------------------------------------------
 
 function collectPayload() {
@@ -443,6 +476,9 @@ function collectPayload() {
       city: state.weather.city || "",
       latitude: state.weather.latitude,
       longitude: state.weather.longitude,
+    },
+    meteo: {
+      enabled: document.getElementById("mt-enabled").checked,
     },
   };
 }
@@ -461,8 +497,10 @@ async function save() {
     if (data.error) { setStatus("Save failed: " + data.error, "err"); return; }
     state.rows = data.layout.rows;
     state.weather = data.weather;
+    state.meteo = data.meteo;
     renderRows();
     renderWeather();
+    renderMeteo();
     setStatus("Saved. The screen updates on its next redraw.", "ok");
   } catch (error) {
     setStatus("Save failed: " + error, "err");

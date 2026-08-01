@@ -15,11 +15,12 @@ paints on top.
 All low-level screen handling lives in the :mod:`oleddisplay` package; what remains here
 is metric collection, the row layout, the refresh loop, and a night-time dimming window
 that eases panel wear. The loop also alternates the dashboard with a weather page (current
-temperature, high/low and conditions from :mod:`weather`), picking the due page with
-:func:`oleddisplay.due_page_index`.
+temperature, high/low and conditions from :mod:`weather`) and an indoor sensor page (room
+temperature, humidity and pressure from :mod:`local_meteo`'s AHT20+BMP280), picking the due
+page with :func:`oleddisplay.due_page_index`.
 """
 
-__version__ = "1.10.0"
+__version__ = "1.11.0"
 
 import argparse
 import math
@@ -45,6 +46,7 @@ from oleddisplay import (
 )
 
 import config
+import local_meteo
 import weather
 import webconfig
 
@@ -95,6 +97,7 @@ Metrics = namedtuple(
 )
 Sensors = namedtuple("Sensors", "cpu_temp ssd_temp fan")
 NetStatus = namedtuple("NetStatus", "kind ssid signal")   # kind: "wifi" | "wired" | None
+Services = namedtuple("Services", "weather meteo")   # the optional background page services
 
 
 # --- Screen drawing ----------------------------------------------------------
@@ -468,6 +471,105 @@ def _draw_fog(draw, box):
         draw.line((x0 + 4, y, x1 - 4, y), fill=WHITE, width=2)
 
 
+# --- Indoor meteo page -------------------------------------------------------
+# A third screen the loop alternates with the dashboard and weather: the local AHT20+BMP280
+# readings (room temperature, humidity, pressure) from :mod:`local_meteo`. Built like the
+# weather page — a custom header with the big room temperature and a small house icon that
+# marks this as the indoor page (parallel to the weather page's condition icon) — then humidity
+# and pressure as plain label/value rows.
+MT_TEMP_SIZE = 26    # big room-temperature number (fits "26.8°C" left of the icon)
+MT_UNIT_SIZE = 13    # the "C" unit beside the big number
+MT_TEMP_TOP = 8      # y of the big temperature
+MT_ICON_BOX = (97, 7, 124, 34)   # (x0, y0, x1, y1) box for the house icon
+MT_BODY_TOP = 44     # y where the humidity/pressure rows start, under the header
+MT_ROW_SIZE = 12     # font of the humidity / pressure rows (12px fits bold "1009 hPa" on 126px)
+MT_ROW_GAP = 6       # blank px between the two rows
+MT_ROW_WIDTHS = [46, 54]   # label / value split; the value is bold (wider) so it gets more
+
+
+def _format_temp1(value):
+    """A temperature to one decimal for display, e.g. ``"26.8"``; ``None`` → ``"--"``."""
+    if value is None:
+        return MISSING
+    return f"{value:.1f}"
+
+
+def _format_humidity(value):
+    """Relative humidity as a whole percent, e.g. ``"54%"``; ``None`` → ``"--"``."""
+    if value is None:
+        return MISSING
+    return f"{value:.0f}%"
+
+
+def _format_pressure(value):
+    """Barometric pressure as whole hPa, e.g. ``"1009 hPa"``; ``None`` → ``"--"``."""
+    if value is None:
+        return MISSING
+    return f"{value:.0f} hPa"
+
+
+def _draw_house(draw, box):
+    """A small house icon (roof + walls + door) marking the indoor sensor page."""
+    x0, y0, x1, y1 = box
+    w = x1 - x0
+    h = y1 - y0
+    eaves = y0 + h * 0.42
+    # Roof: a triangle spanning the full width.
+    draw.polygon([(x0, eaves), ((x0 + x1) / 2, y0), (x1, eaves)], outline=WHITE, width=2)
+    # Walls: an outlined box under the eaves, slightly inset from the roof edges.
+    inset = w * 0.12
+    draw.rectangle((x0 + inset, eaves, x1 - inset, y1), outline=WHITE, width=2)
+    # Door: a small filled slab centred at the bottom.
+    door_w = w * 0.22
+    door_cx = (x0 + x1) / 2
+    draw.rectangle((door_cx - door_w / 2, y1 - h * 0.34, door_cx + door_w / 2, y1), fill=WHITE)
+
+
+def _draw_meteo_header(display, draw, reading):
+    """The custom top of the meteo page: the big room temperature and the house icon."""
+    temp_font = display.font(MT_TEMP_SIZE, bold=True)
+    unit_font = display.font(MT_UNIT_SIZE, bold=True)
+    temp_text = f"{_format_temp1(reading.temp_c)}°"
+    draw.text((MARGIN, MT_TEMP_TOP), temp_text, font=temp_font, fill=WHITE)
+    unit_x = MARGIN + temp_font.getlength(temp_text) + 1
+    draw.text((unit_x, MT_TEMP_TOP + MT_TEMP_SIZE - MT_UNIT_SIZE - 3),
+              "C", font=unit_font, fill=WHITE)
+    _draw_house(draw, MT_ICON_BOX)
+
+
+def show_meteo(display, reading):
+    """Show the indoor meteo page: big temperature + house icon, then humidity and pressure.
+
+    ``reading`` is the latest :class:`local_meteo.MeteoReading` (``None`` before the first
+    sensor read). Any single field may be ``None`` if that sensor failed; it renders as ``--``.
+    The screen is built from the display's building blocks — the custom header, then the two
+    rows stacked under it — and ``display.show()`` puts it on the panel as one frame.
+    """
+    if reading is None:
+        def paint(draw):
+            font = display.font(14)
+            draw.text((MARGIN, display.height // 2 - 8), "Sensor…", font=font, fill=WHITE)
+        display.render(paint)
+        return
+
+    def paint_header(draw):
+        _draw_meteo_header(display, draw, reading)
+
+    display.show_custom(paint_header)
+    display.show_empty_line(MT_BODY_TOP)
+
+    display.set_font("sans", MT_ROW_SIZE)
+    display.show_columns([["Humidity", _format_humidity(reading.humidity)]],
+                         MT_ROW_WIDTHS, ROW_ALIGNS, ROW_STYLES)
+    display.show_empty_line(MT_ROW_GAP)
+    display.show_columns([["Pressure", _format_pressure(reading.pressure_hpa)]],
+                         MT_ROW_WIDTHS, ROW_ALIGNS, ROW_STYLES)
+
+    display.show()
+
+    display.set_font()   # don't leak the meteo font into the other screens
+
+
 # --- Metric collection -------------------------------------------------------
 
 def find_hwmon_input(target_name, input_file):
@@ -722,7 +824,7 @@ def _raise_keyboard_interrupt(signum, frame):
     raise KeyboardInterrupt
 
 
-def run(display, args, hostname, sensors, weather_service, config_store):
+def run(display, args, hostname, sensors, services, config_store):
     """Draw a single frame (``--once``) or loop, alternating pages, until interrupted."""
     if args.once:
         # A short pause so the first cpu_percent reading is meaningful.
@@ -743,31 +845,36 @@ def run(display, args, hostname, sensors, weather_service, config_store):
                 display.set_contrast(wanted)
                 applied_contrast = wanted
 
-            _show_current_page(display, args, hostname, sensors, weather_service, config_store)
+            _show_current_page(display, args, hostname, sensors, services, config_store)
             time.sleep(args.interval)
     except KeyboardInterrupt:
         pass
 
 
-def _show_current_page(display, args, hostname, sensors, weather_service, config_store):
-    """Draw whichever page is due now — the dashboard, or the weather page on its turn.
+def _show_current_page(display, args, hostname, sensors, services, config_store):
+    """Draw whichever page is due now — the dashboard, or an optional page on its turn.
 
-    Pages alternate on an ``args.page_seconds`` timer. The weather page joins the rotation
-    only when a weather service is running; otherwise the dashboard is always shown. The
-    dashboard reads its row layout from the shared config each frame, so a web-panel edit
-    shows up on the next redraw without a restart.
+    Page 0 is always the dashboard. The weather and indoor-meteo pages join the rotation only
+    when their background service is running AND the config keeps them enabled, so the web panel
+    can turn either off independently. Pages alternate on an ``args.page_seconds`` timer. The
+    dashboard reads its row layout from the shared config each frame, so a web-panel edit shows
+    up on the next redraw without a restart.
     """
     config = config_store.snapshot()
 
-    # The weather page joins the rotation only when the service is running AND the config
-    # keeps it enabled — the web panel can turn it off entirely, leaving the dashboard alone.
-    on_weather = False
-    if weather_service is not None and config.weather.enabled:
-        page = due_page_index(time.monotonic(), seconds=args.page_seconds, count=2)
-        on_weather = page == 1
+    # Page 0 is the dashboard; append each optional page that is both live and enabled.
+    pages = ["dashboard"]
+    if services.weather is not None and config.weather.enabled:
+        pages.append("weather")
+    if services.meteo is not None and config.meteo.enabled:
+        pages.append("meteo")
 
-    if on_weather:
-        show_weather(display, weather_service.latest())
+    index = due_page_index(time.monotonic(), seconds=args.page_seconds, count=len(pages))
+    page = pages[index]
+    if page == "weather":
+        show_weather(display, services.weather.latest())
+    elif page == "meteo":
+        show_meteo(display, services.meteo.latest())
     else:
         show_dashboard(display, collect_metrics(hostname, sensors), config.rows)
 
@@ -811,6 +918,13 @@ def parse_args():
     parser.add_argument("--city", type=str, default=None,
                         help="place name to show (default: from geolocation)")
 
+    # Indoor meteo page (a third screen: the local AHT20+BMP280 sensor readings).
+    parser.add_argument("--meteo", action=argparse.BooleanOptionalAction, default=True,
+                        help="show the indoor sensor page (AHT20+BMP280) in the rotation "
+                             "(default on; --no-meteo to disable)")
+    parser.add_argument("--meteo-refresh", type=float, default=30.0,
+                        help="how often to read the indoor sensors, in seconds (default 30)")
+
     # Runtime config file + web panel. The --city/--latitude/--longitude and --weather flags
     # above only seed the config on first run; after that config.json (edited via the panel)
     # wins.
@@ -847,6 +961,8 @@ def main():
     psutil.cpu_percent(interval=None)
 
     weather_service = _start_weather(args, config_store.snapshot().weather)
+    meteo_service = _start_meteo(args)
+    services = Services(weather=weather_service, meteo=meteo_service)
     if args.web and not args.once:
         # A failure to bind the panel (e.g. the port is taken) must not stop the display —
         # log it and carry on showing stats.
@@ -859,7 +975,7 @@ def main():
     # (Ctrl-C or SIGTERM).
     with OledDisplay.open(bus=args.bus, address=args.address, rotate=args.rotate,
                           contrast=args.contrast, clear_on_close=not args.once) as display:
-        run(display, args, hostname, sensors, weather_service, config_store)
+        run(display, args, hostname, sensors, services, config_store)
 
 
 def _load_config(args):
@@ -869,6 +985,7 @@ def _load_config(args):
         latitude=args.latitude,
         longitude=args.longitude,
         weather_enabled=args.weather,
+        meteo_enabled=args.meteo,
     )
     store = config.ConfigStore(args.config, seed=seed,
                                log=lambda message: print(message, flush=True))
@@ -898,6 +1015,27 @@ def _start_weather(args, weather_conf):
         refresh_seconds=args.weather_refresh,
         timeout=args.weather_timeout,
         location=location,
+        log=lambda message: print(message, flush=True),
+    )
+    service.start()
+    return service
+
+
+def _start_meteo(args):
+    """Build and start the indoor sensor service, or return ``None`` when meteo is off / --once.
+
+    Reads the AHT20+BMP280 on the same I²C bus as the display every ``--meteo-refresh`` seconds
+    on its own thread; the display loop reads the cached snapshot via ``latest()`` and never
+    blocks on a sensor measurement. Runs whenever ``--meteo`` is on even if the config currently
+    hides the page, so re-enabling it from the panel shows a fresh reading at once. Sensors are
+    never read in ``--once``.
+    """
+    if not args.meteo or args.once:
+        return None
+
+    service = local_meteo.MeteoService(
+        refresh_seconds=args.meteo_refresh,
+        bus_number=args.bus,
         log=lambda message: print(message, flush=True),
     )
     service.start()

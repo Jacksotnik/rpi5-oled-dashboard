@@ -19,7 +19,8 @@ The JSON shape (``config.json``)::
       "version": 1,
       "layout": { "rows": [ {"key": "cpu", "enabled": true}, ... ] },
       "weather": { "mode": "manual", "city": "Rijeka",
-                   "latitude": 45.32673, "longitude": 14.44241 }
+                   "latitude": 45.32673, "longitude": 14.44241 },
+      "meteo": { "enabled": true }
     }
 """
 
@@ -58,7 +59,8 @@ WEATHER_MODES = (WEATHER_MANUAL, WEATHER_AUTO)
 # the typed objects and never reaches back into raw dicts.
 LayoutRow = namedtuple("LayoutRow", "key enabled")
 WeatherConf = namedtuple("WeatherConf", "enabled mode city latitude longitude")
-Config = namedtuple("Config", "rows weather")   # rows: list[LayoutRow]
+MeteoConf = namedtuple("MeteoConf", "enabled")   # the local AHT20+BMP280 sensor page
+Config = namedtuple("Config", "rows weather meteo")   # rows: list[LayoutRow]
 
 
 # --- Defensive readers for loosely-typed (JSON) data ------------------------
@@ -140,6 +142,16 @@ def _parse_weather(raw_weather, *, seed_weather):
                        latitude=latitude, longitude=longitude)
 
 
+def _parse_meteo(raw_meteo, *, seed_meteo):
+    """Validate the meteo block from raw JSON into a :class:`MeteoConf`.
+
+    ``enabled`` toggles the whole indoor sensor page in the rotation; anything odd falls back
+    to the seed's value.
+    """
+    enabled = _as_bool(_get(raw_meteo, "enabled", seed_meteo.enabled), seed_meteo.enabled)
+    return MeteoConf(enabled=enabled)
+
+
 def parse_config(raw, *, seed):
     """Parse a loosely-typed config dict into a validated :class:`Config`.
 
@@ -149,7 +161,8 @@ def parse_config(raw, *, seed):
     layout = _get(raw, "layout", {})
     rows = _parse_rows(_get(layout, "rows", None), seed_rows=seed.rows)
     weather = _parse_weather(_get(raw, "weather", {}), seed_weather=seed.weather)
-    return Config(rows=rows, weather=weather)
+    meteo = _parse_meteo(_get(raw, "meteo", {}), seed_meteo=seed.meteo)
+    return Config(rows=rows, weather=weather, meteo=meteo)
 
 
 def config_to_dict(config):
@@ -166,15 +179,19 @@ def config_to_dict(config):
             "latitude": config.weather.latitude,
             "longitude": config.weather.longitude,
         },
+        "meteo": {
+            "enabled": config.meteo.enabled,
+        },
     }
 
 
-def default_seed(*, city, latitude, longitude, weather_enabled):
+def default_seed(*, city, latitude, longitude, weather_enabled, meteo_enabled):
     """Build the first-run seed config from the current CLI arguments.
 
     All rows start visible in their canonical order. The weather page starts enabled per the
     ``--weather/--no-weather`` flag, and its location is manual when a fixed
-    latitude/longitude pair was supplied on the command line, otherwise auto (by IP).
+    latitude/longitude pair was supplied on the command line, otherwise auto (by IP). The
+    indoor meteo page starts enabled per the ``--meteo/--no-meteo`` flag.
     """
     rows = [LayoutRow(key=key, enabled=True) for key in ROW_KEYS]
     has_coords = latitude is not None and longitude is not None
@@ -185,7 +202,8 @@ def default_seed(*, city, latitude, longitude, weather_enabled):
         latitude=latitude,
         longitude=longitude,
     )
-    return Config(rows=rows, weather=weather)
+    meteo = MeteoConf(enabled=meteo_enabled)
+    return Config(rows=rows, weather=weather, meteo=meteo)
 
 
 # --- Thread-safe store ------------------------------------------------------

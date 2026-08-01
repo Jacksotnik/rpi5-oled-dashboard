@@ -1,4 +1,5 @@
 # Display library, installed from its own repository (no local copy kept here):
 rpi5-sh1107-oled-128x128 @ git+https://github.com/Jacksotnik/rpi5-sh1107-oled-128x128.git
-# Extra used only by stats_oled.py:
+# Extras used by stats_oled.py / local_meteo.py:
 psutil>=7.0.0
+smbus2>=0.4.0
