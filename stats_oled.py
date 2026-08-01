@@ -20,7 +20,7 @@ temperature, humidity and pressure from :mod:`local_meteo`'s AHT20+BMP280), pick
 page with :func:`oleddisplay.due_page_index`.
 """
 
-__version__ = "1.14.1"
+__version__ = "1.14.2"
 
 import argparse
 import math
@@ -594,13 +594,18 @@ def show_meteo(display, reading, pressure_points=(), temp_offset=0.0):
     ``pressure_points`` is the file-backed history (``[epoch, hPa]``, oldest first) drawn as the
     bottom trend graph — it survives a reboot, so the graph can show even before the first live
     read. ``temp_offset`` (°C) is added to the sensor's room temperature before it is drawn, to
-    compensate for the sensor's heat pickup next to the panel/board; humidity and pressure are
-    shown as measured. The screen is stacked from the building blocks (custom header + graph,
-    plain rows) and ``display.show()`` puts it on the panel as one frame.
+    compensate for the sensor's heat pickup next to the panel/board, and the result is snapped to
+    the nearest :data:`config.TEMP_DISPLAY_STEP` (0.5 °C) to smooth jitter — the same value the MQTT
+    publisher sends. Humidity and pressure are shown as measured. The screen is stacked from the
+    building blocks (custom header + graph, plain rows) and ``display.show()`` puts it on the panel
+    as one frame.
     """
     # Tolerate a missing reading: the header/rows show "--" while the graph still draws history.
+    # The room temperature gets the compensation offset and is then snapped to the nearest
+    # config.TEMP_DISPLAY_STEP (0.5 °C) — the same smoothing the MQTT publisher applies, so the
+    # panel and Home Assistant show the identical value.
     raw_temp_c = reading.temp_c if reading is not None else None
-    temp_c = raw_temp_c + temp_offset if raw_temp_c is not None else None
+    temp_c = config.snap_temperature(raw_temp_c + temp_offset) if raw_temp_c is not None else None
     humidity = reading.humidity if reading is not None else None
     pressure_hpa = reading.pressure_hpa if reading is not None else None
 

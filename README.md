@@ -121,7 +121,8 @@ From it you can, live (changes show up on the next redraw, no restart):
   so it reads a little high; the picker nudges the *displayed* room temperature by a fixed
   amount (range **−5…+5 °C**, step **0.5**, default **0**). The offset applies only to the
   shown temperature — humidity and pressure, and the raw value in the service log, are
-  untouched.
+  untouched. The room temperature (both on screen and published to MQTT) is then **snapped to the
+  nearest 0.5 °C** to smooth sensor jitter, so it doesn't flicker between neighbouring tenths.
 - **Home Assistant** — turn MQTT publishing of the indoor readings on or off (see the next
   section). The broker address and credentials live in `config.json` on the device and are
   **not** editable from the panel — only this toggle is.
@@ -141,8 +142,9 @@ HA side. The live values then go as one retained JSON state message.
 
 Publishing is **event-driven**: each reading is sent the instant it is taken (once per
 `--meteo-refresh`, 30 s by default), reusing the same read the dashboard already does — so it
-adds **no extra I²C traffic**. The published room temperature carries the same temperature
-compensation offset as the screen; humidity and pressure are sent as measured. A Last-Will
+adds **no extra I²C traffic**. The published room temperature carries the same compensation
+offset **and 0.5 °C smoothing** as the screen (so the panel and HA never disagree); humidity and
+pressure are sent as whole units (0.1 hPa is below meaningful barometer accuracy). A Last-Will
 message flips the device **offline** in HA if the service dies (or the toggle is turned off),
 so a dead sensor is flagged rather than left showing a stale value.
 

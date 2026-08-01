@@ -69,6 +69,23 @@ METEO_TEMP_OFFSET_MAX = 5.0
 METEO_TEMP_OFFSET_STEP = 0.5
 METEO_TEMP_OFFSET_DEFAULT = 0.0
 
+# Room temperatures — both the value drawn on the OLED and the one published to Home Assistant —
+# are snapped to the nearest this-many degrees, to smooth out sensor jitter in the fractional part
+# so the reading doesn't flicker between e.g. 26.8 and 26.9. Deliberately its own constant, not the
+# offset picker's step above: this is output smoothing, not the compensation granularity.
+TEMP_DISPLAY_STEP = 0.5
+
+
+def snap_temperature(value):
+    """Snap a temperature (°C) to the nearest :data:`TEMP_DISPLAY_STEP`; ``None`` stays ``None``.
+
+    The single source of truth for the smoothing both the meteo screen and the MQTT publisher
+    apply, so the panel and Home Assistant always show the same rounded value.
+    """
+    if value is None:
+        return None
+    return round(value / TEMP_DISPLAY_STEP) * TEMP_DISPLAY_STEP
+
 # --- Typed config -----------------------------------------------------------
 # Loosely-typed JSON is parsed into these at the boundary; the rest of the app works with
 # the typed objects and never reaches back into raw dicts.
